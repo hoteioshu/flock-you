@@ -58,28 +58,32 @@
 // DETECTION PATTERNS
 // ============================================================================
 
-// Known Flock Safety MAC address prefixes (OUIs)
-static const char* mac_prefixes[] = {
+// MAC address prefixes (OUIs)
+
+// Flock Safety — high-confidence OUIs (direct registration or exclusive use)
+static const char* flock_mac_prefixes[] = {
     // FS Ext Battery devices
     "58:8e:81", "cc:cc:cc", "ec:1b:bd", "90:35:ea", "04:0d:84",
     "f0:82:c0", "1c:34:f1", "38:5b:44", "94:34:69", "b4:e3:f9",
-    // Flock WiFi devices (Liteon Technology + USI)
-    // These OUIs belong to Liteon Technology and USI (Universal Scientific
-    // Industrial) — contract manufacturers that produce Flock Safety's
-    // WiFi-enabled cameras. Sourced from OUI-SPY firmware ecosystem table
-    // cross-referenced with IEEE OUI registry and field observations.
+    // Flock WiFi devices
     "70:c9:4e", "3c:91:80", "d8:f3:bc", "80:30:49", "14:5a:fc",
     "74:4c:a1", "08:3a:88", "9c:2f:9d", "94:08:53", "e4:aa:ea",
-    "f4:6a:dd", "f8:a2:d6", "e0:0a:f6", "00:f4:8d", "d0:39:57",
-    "e8:d0:fc",
     // Flock Safety (direct IEEE registration)
-    // b4:1e:52 is registered directly to "Flock Safety" in the IEEE OUI
-    // database — this is their own prefix, not a contract manufacturer.
-    "b4:1e:52",
-    // ShotSpotter / SoundThinking
-    // d4:11:d6 is registered to SoundThinking (formerly ShotSpotter) in
-    // the IEEE OUI database. Their acoustic gunshot detection sensors use
-    // BLE for local diagnostics and provisioning.
+    "b4:1e:52"
+};
+
+// Flock Safety contract manufacturers — lower confidence alone.
+// These OUIs belong to Liteon Technology and USI (Universal Scientific
+// Industrial), which produce Flock hardware but also ship unrelated
+// consumer/enterprise devices. MAC match alone may be a false positive.
+static const char* flock_mfr_mac_prefixes[] = {
+    "f4:6a:dd", "f8:a2:d6", "e0:0a:f6", "00:f4:8d", "d0:39:57",
+    "e8:d0:fc"
+};
+
+// SoundThinking (formerly ShotSpotter) — acoustic gunshot detection sensors.
+// d4:11:d6 is registered to SoundThinking in the IEEE OUI database.
+static const char* soundthinking_mac_prefixes[] = {
     "d4:11:d6"
 };
 
@@ -251,11 +255,23 @@ static void fyHeartbeat() {
 // DETECTION HELPERS
 // ============================================================================
 
-static bool checkMACPrefix(const uint8_t* mac) {
-    char mac_str[9];
-    snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x", mac[0], mac[1], mac[2]);
-    for (size_t i = 0; i < sizeof(mac_prefixes)/sizeof(mac_prefixes[0]); i++) {
-        if (strncasecmp(mac_str, mac_prefixes[i], 8) == 0) return true;
+static bool checkFlockMAC(const char* mac_str) {
+    for (size_t i = 0; i < sizeof(flock_mac_prefixes)/sizeof(flock_mac_prefixes[0]); i++) {
+        if (strncasecmp(mac_str, flock_mac_prefixes[i], 8) == 0) return true;
+    }
+    return false;
+}
+
+static bool checkFlockMfrMAC(const char* mac_str) {
+    for (size_t i = 0; i < sizeof(flock_mfr_mac_prefixes)/sizeof(flock_mfr_mac_prefixes[0]); i++) {
+        if (strncasecmp(mac_str, flock_mfr_mac_prefixes[i], 8) == 0) return true;
+    }
+    return false;
+}
+
+static bool checkSoundThinkingMAC(const char* mac_str) {
+    for (size_t i = 0; i < sizeof(soundthinking_mac_prefixes)/sizeof(soundthinking_mac_prefixes[0]); i++) {
+        if (strncasecmp(mac_str, soundthinking_mac_prefixes[i], 8) == 0) return true;
     }
     return false;
 }
@@ -392,34 +408,45 @@ class FYBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
         NimBLEAddress addr = dev->getAddress();
         std::string addrStr = addr.toString();
 
-        // Safe MAC byte extraction
-        unsigned int m[6];
-        sscanf(addrStr.c_str(), "%02x:%02x:%02x:%02x:%02x:%02x",
-               &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]);
-        uint8_t mac[6] = {(uint8_t)m[0], (uint8_t)m[1], (uint8_t)m[2],
-                          (uint8_t)m[3], (uint8_t)m[4], (uint8_t)m[5]};
+        // Extract MAC prefix string for OUI checks
+        char macPrefix[9];
+        snprintf(macPrefix, sizeof(macPrefix), "%.8s", addrStr.c_str());
 
         int rssi = dev->getRSSI();
         std::string name = dev->haveName() ? dev->getName() : "";
 
         bool detected = false;
+        bool highConfidence = true;
         const char* method = "";
         bool isRaven = false;
         const char* ravenFW = "";
 
-        // 1. Check MAC prefix against known Flock Safety OUIs
-        if (checkMACPrefix(mac)) {
+        // 1. Check Flock Safety direct OUIs (high confidence)
+        if (checkFlockMAC(macPrefix)) {
             detected = true;
             method = "mac_prefix";
         }
 
-        // 2. Check BLE device name patterns
+        // 2. Check SoundThinking/ShotSpotter OUIs (high confidence)
+        if (!detected && checkSoundThinkingMAC(macPrefix)) {
+            detected = true;
+            method = "mac_prefix_soundthinking";
+        }
+
+        // 3. Check Flock contract manufacturer OUIs (low confidence)
+        if (!detected && checkFlockMfrMAC(macPrefix)) {
+            detected = true;
+            method = "mac_prefix_mfr";
+            highConfidence = false;
+        }
+
+        // 4. Check BLE device name patterns
         if (!detected && !name.empty() && checkDeviceName(name.c_str())) {
             detected = true;
             method = "device_name";
         }
 
-        // 3. Check BLE manufacturer company IDs (from wgreenberg/flock-you)
+        // 5. Check BLE manufacturer company IDs (from wgreenberg/flock-you)
         if (!detected) {
             for (int i = 0; i < (int)dev->getManufacturerDataCount(); i++) {
                 std::string data = dev->getManufacturerData(i);
@@ -435,7 +462,7 @@ class FYBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
             }
         }
 
-        // 4. Check Raven gunshot detector service UUIDs
+        // 6. Check Raven gunshot detector service UUIDs
         if (!detected) {
             char detUUID[41] = {0};
             if (checkRavenUUID(dev, detUUID)) {
@@ -475,11 +502,13 @@ class FYBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
                        method, addrStr.c_str(), name.c_str(), rssi, gpsBuf);
             }
 
-            if (!fyTriggered) {
+            if (!fyTriggered && highConfidence) {
                 fyTriggered = true;
                 fyDetectBeep();
             }
-            fyDeviceInRange = true;
+            if (highConfidence) {
+                fyDeviceInRange = true;
+            }
             fyLastDetTime = millis();
             fyLastHB = millis();
         }
@@ -685,7 +714,9 @@ function card(d){return '<div class="det"><div class="mac">'+d.mac+(d.name?'<spa
 function loadHistory(){fetch('/api/history').then(r=>r.json()).then(d=>{H=d;let el=document.getElementById('hL');if(!H.length){el.innerHTML='<div class="empty">No prior session data</div>';return;}
 H.sort((a,b)=>b.last-a.last);el.innerHTML='<div style="font-size:11px;color:#8b5cf6;margin-bottom:8px">'+H.length+' detections from prior session</div>'+H.map(card).join('');window._hL=1;}).catch(()=>{document.getElementById('hL').innerHTML='<div class="empty">No prior session data</div>';});}
 function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{let h='';
-h+='<div class="pg"><h3>MAC Prefixes ('+p.macs.length+')</h3><div class="it">'+p.macs.map(m=>'<span>'+m+'</span>').join('')+'</div></div>';
+h+='<div class="pg"><h3>Flock MAC Prefixes ('+p.macs.length+')</h3><div class="it">'+p.macs.map(m=>'<span>'+m+'</span>').join('')+'</div></div>';
+h+='<div class="pg"><h3>Contract Mfr MACs ('+p.macs_mfr.length+')</h3><div class="it">'+p.macs_mfr.map(m=>'<span>'+m+'</span>').join('')+'</div></div>';
+h+='<div class="pg"><h3>SoundThinking MACs ('+p.macs_soundthinking.length+')</h3><div class="it">'+p.macs_soundthinking.map(m=>'<span>'+m+'</span>').join('')+'</div></div>';
 h+='<div class="pg"><h3>BLE Device Names ('+p.names.length+')</h3><div class="it">'+p.names.map(n=>'<span>'+n+'</span>').join('')+'</div></div>';
 h+='<div class="pg"><h3>BLE Manufacturer IDs ('+p.mfr.length+')</h3><div class="it">'+p.mfr.map(m=>'<span>0x'+m.toString(16).toUpperCase().padStart(4,'0')+'</span>').join('')+'</div></div>';
 h+='<div class="pg"><h3>Raven UUIDs ('+p.raven.length+')</h3><div class="it">'+p.raven.map(u=>'<span style="font-size:8px">'+u+'</span>').join('')+'</div></div>';
@@ -771,9 +802,19 @@ static void fySetupServer() {
     fyServer.on("/api/patterns", HTTP_GET, [](AsyncWebServerRequest *r) {
         AsyncResponseStream *resp = r->beginResponseStream("application/json");
         resp->print("{\"macs\":[");
-        for (size_t i = 0; i < sizeof(mac_prefixes)/sizeof(mac_prefixes[0]); i++) {
+        for (size_t i = 0; i < sizeof(flock_mac_prefixes)/sizeof(flock_mac_prefixes[0]); i++) {
             if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", mac_prefixes[i]);
+            resp->printf("\"%s\"", flock_mac_prefixes[i]);
+        }
+        resp->print("],\"macs_mfr\":[");
+        for (size_t i = 0; i < sizeof(flock_mfr_mac_prefixes)/sizeof(flock_mfr_mac_prefixes[0]); i++) {
+            if (i > 0) resp->print(",");
+            resp->printf("\"%s\"", flock_mfr_mac_prefixes[i]);
+        }
+        resp->print("],\"macs_soundthinking\":[");
+        for (size_t i = 0; i < sizeof(soundthinking_mac_prefixes)/sizeof(soundthinking_mac_prefixes[0]); i++) {
+            if (i > 0) resp->print(",");
+            resp->printf("\"%s\"", soundthinking_mac_prefixes[i]);
         }
         resp->print("],\"names\":[");
         for (size_t i = 0; i < sizeof(device_name_patterns)/sizeof(device_name_patterns[0]); i++) {
