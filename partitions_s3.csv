@@ -1,0 +1,7 @@
+# Flock-You partition table — Seeed XIAO ESP32-S3 (8 MB flash)
+# Factory app only (no OTA).  App ≤ 6 MB, SPIFFS ≥ 2 MB.
+#
+# Name,   Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+app0,     app,  factory,  0x10000,  0x5F0000,
+spiffs,   data, spiffs,   0x600000, 0x200000,
