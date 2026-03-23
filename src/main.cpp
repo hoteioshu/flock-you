@@ -1093,7 +1093,7 @@ static void fySetupServer() {
             int placed = 0;
             for (JsonObject d : doc.as<JsonArray>()) {
                 JsonObject gps = d["gps"];
-                if (!gps || !gps.containsKey("lat")) continue;
+                if (!gps || !gps["lat"].is<double>()) continue;
                 bool isRaven = d["raven"] | false;
                 resp->printf("<Placemark><name>%s</name>\n", d["mac"] | "?");
                 resp->printf("<styleUrl>#%s</styleUrl>\n", isRaven ? "raven" : "det");
