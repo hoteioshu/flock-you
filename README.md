@@ -12,7 +12,7 @@ Available as part of the OUI-SPY project at [colonelpanic.tech](https://colonelp
 
 Flock-You detects Flock Safety surveillance cameras, Raven gunshot detectors, and related monitoring hardware using BLE-only heuristics. It runs a WiFi access point with a live web dashboard on your phone, tags detections with GPS from your phone's browser, and exports everything as JSON, CSV, or KML for Google Earth.
 
-No WiFi sniffing — the radio is dedicated to serving the dashboard AP while BLE scans continuously in the background via ESP32 coexistence.
+No WiFi sniffing — the BLE radio scans continuously while WiFi serves the dashboard, using ESP32 dual-radio coexistence. The ESP32 can simultaneously join your phone's mobile hotspot so your phone retains cellular data while connected.
 
 ---
 
@@ -32,10 +32,11 @@ All detection is BLE-based:
 
 ## Features
 
-- **WiFi AP**: `flockyou` / password `flockyou123`
-- **Web dashboard** at `192.168.4.1` — live detection feed, pattern database, export tools
-- **GPS wardriving** — phone GPS via browser Geolocation API tags every detection with coordinates
-- **Session persistence** — detections auto-save to flash (SPIFFS) every 60 seconds
+- **WiFi AP**: `flockyou` / password `flockyou123` — always active at `192.168.4.1`
+- **WiFi STA (hotspot mode)**: join your phone's mobile hotspot so your phone keeps cellular data; dashboard also reachable at `flockyou.local`
+- **Web dashboard** at `192.168.4.1` (or `flockyou.local` on hotspot) — live detection feed, pattern database, export tools
+- **GPS wardriving** — phone GPS via browser Geolocation API auto-starts and tags every detection with coordinates
+- **Session persistence** — detections auto-save to flash (SPIFFS) every 15 seconds
 - **Prior session tab** — previous session survives reboot and is viewable in the PREV tab
 - **Export formats**: JSON, CSV, and KML (Google Earth) — current and prior sessions
 - **Serial output** — Flask-compatible JSON over serial for live desktop ingestion
@@ -46,17 +47,41 @@ All detection is BLE-based:
 
 ---
 
+## Connecting Your Phone
+
+There are two ways to use the dashboard on your phone. Both can be configured from the **TOOLS → WIFI MODE** section of the dashboard.
+
+### Option A — Direct AP (simple, no internet on phone)
+
+1. Connect your phone to the `flockyou` WiFi network (password `flockyou123`)
+2. Open `http://192.168.4.1` in Chrome
+3. Your phone will **lose cellular/internet** while connected to the AP
+
+### Option B — Phone Hotspot (recommended, phone keeps cellular)
+
+1. Turn on your phone's **mobile hotspot**
+2. Connect to the `flockyou` AP first and open `http://192.168.4.1`
+3. Go to **TOOLS → WIFI MODE → CONFIGURE HOTSPOT (STA)**
+4. Enter your hotspot SSID and password, tap **CONNECT**
+5. After ~20 seconds the ESP32 joins your hotspot. You can now:
+   - Disconnect from `flockyou` AP and reconnect to your hotspot
+   - Open `http://flockyou.local` in Chrome — dashboard loads over your hotspot with cellular data intact
+
+Credentials are saved to flash and reconnected automatically on every boot.
+
+---
+
 ## Enabling GPS (Android Chrome)
 
-The dashboard uses your phone's GPS to geotag detections. Because it's served over HTTP, Chrome requires a one-time flag change:
+The dashboard uses your phone's GPS to geotag detections. GPS starts automatically when you open the dashboard. Because it's served over HTTP, Chrome requires a one-time flag to allow location access:
 
 1. Open a new Chrome tab and go to `chrome://flags`
 2. Search for **"Insecure origins treated as secure"**
-3. Add `http://192.168.4.1` to the text field
+3. Add `http://192.168.4.1` to the text field (also add `http://flockyou.local` if using hotspot mode)
 4. Set the flag to **Enabled**
 5. Tap **Relaunch**
 
-After relaunching, connect to the `flockyou` AP, open `192.168.4.1`, and tap the **GPS** card in the stats bar to grant location permission.
+After relaunching, the GPS indicator in the stats bar will show `OK` automatically once a fix is acquired.
 
 > **Note:** iOS Safari does not support Geolocation over HTTP. GPS wardriving requires Android with Chrome.
 
@@ -64,11 +89,11 @@ After relaunching, connect to the `flockyou` AP, open `192.168.4.1`, and tap the
 
 ## Hardware
 
-**Board:** Seeed Studio XIAO ESP32-S3
+**Board:** ESP32-DevKitC-32E (16MB flash)
 
 | Pin | Function |
 |-----|----------|
-| GPIO 3 | Piezo buzzer |
+| GPIO 25 | Piezo buzzer |
 | GPIO 21 | LED (optional) |
 
 ---
@@ -79,9 +104,16 @@ Requires [PlatformIO](https://platformio.org/).
 
 ```bash
 cd flock-you
-pio run                     # build
-pio run -t upload           # flash
-pio device monitor          # serial output
+pio run                       # build
+pio run -t upload             # flash
+pio device monitor            # serial output (115200 baud)
+pio run -t uploadfs           # upload SPIFFS filesystem image
+```
+
+To flash to a specific COM port:
+
+```bash
+pio run -t upload --upload-port COM14
 ```
 
 **Dependencies** (managed by PlatformIO):
@@ -145,7 +177,7 @@ Flock-You is part of the OUI-SPY firmware family:
 | **[OUI-SPY Unified](https://github.com/colonelpanichacks/oui-spy-unified-blue)** | Multi-mode BLE + WiFi detector | ESP32-S3 / ESP32-C5 |
 | **[OUI-SPY Detector](https://github.com/colonelpanichacks/ouispy-detector)** | Targeted BLE scanner with OUI filtering | ESP32-S3 |
 | **[OUI-SPY Foxhunter](https://github.com/colonelpanichacks/ouispy-foxhunter)** | RSSI-based proximity tracker | ESP32-S3 |
-| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety / Raven surveillance detection (this project) | ESP32-S3 |
+| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety / Raven surveillance detection (this project) | ESP32-DevKitC |
 | **[Sky-Spy](https://github.com/colonelpanichacks/Sky-Spy)** | Drone Remote ID detection | ESP32-S3 / ESP32-C5 |
 | **[Remote-ID-Spoofer](https://github.com/colonelpanichacks/Remote-ID-Spoofer)** | WiFi Remote ID spoofer & simulator with swarm mode | ESP32-S3 |
 | **[OUI-SPY UniPwn](https://github.com/colonelpanichacks/Oui-Spy-UniPwn)** | Unitree robot exploitation system | ESP32-S3 |

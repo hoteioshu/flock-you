@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "esp_wifi.h"
+#include <ESPmDNS.h>
 
 // ============================================================================
 // CONFIGURATION
@@ -191,10 +192,20 @@ static unsigned long fyGPSLastUpdate = 0;
 // Session persistence (SPIFFS)
 #define FY_SESSION_FILE  "/session.json"
 #define FY_PREV_FILE     "/prev_session.json"
+#define FY_WIFI_FILE     "/wifi.json"
 #define FY_SAVE_INTERVAL 15000  // Auto-save every 15 seconds (prevent data loss on quick power-cycle)
 static unsigned long fyLastSave = 0;
 static int fyLastSaveCount = 0;  // Track changes to avoid unnecessary writes
 static bool fySpiffsReady = false;
+
+// WiFi STA (hotspot join) state
+static String fySavedSSID = "";
+static String fySavedPass = "";
+static bool fySTAConnected = false;
+static bool fySTAConnecting = false;
+static unsigned long fySTAConnectStart = 0;
+static volatile bool fySTAConnectPending = false;
+static String fySTAIP = "";
 
 // ============================================================================
 // AUDIO SYSTEM
@@ -462,20 +473,14 @@ static void fySendBLE(const char* data, size_t len) {
 
 static void fyOnCompanionChange() {
     if (fyBLEClientConnected || fySerialHostConnected) {
-        // Companion mode — disable WiFi AP, boost BLE scanning
-        WiFi.softAPdisconnect(true);
-        WiFi.mode(WIFI_OFF);
+        // Companion mode — boost BLE scan duty cycle, keep WiFi AP up for phone dashboard
         fyBleScanDuration = 3;
-        printf("[FLOCK-YOU] Companion mode: WiFi AP OFF, scan duration %ds\n",
+        printf("[FLOCK-YOU] Companion mode: scan duration %ds (WiFi AP stays ON)\n",
                fyBleScanDuration);
     } else {
-        // Standalone mode — re-enable WiFi AP and web dashboard
-        WiFi.mode(WIFI_AP);
-        delay(100);
-        WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
+        // Standalone mode — normal scan duty cycle
         fyBleScanDuration = 2;
-        printf("[FLOCK-YOU] Standalone mode: WiFi AP ON (%s), scan duration %ds\n",
-               FY_AP_SSID, fyBleScanDuration);
+        printf("[FLOCK-YOU] Standalone mode: scan duration %ds\n", fyBleScanDuration);
     }
 }
 
@@ -696,6 +701,35 @@ static void fyPromotePrevSession() {
 }
 
 // ============================================================================
+// WIFI STA (HOTSPOT) MANAGEMENT
+// ============================================================================
+
+static bool fyLoadWifiCreds() {
+    if (!fySpiffsReady || !SPIFFS.exists(FY_WIFI_FILE)) return false;
+    File f = SPIFFS.open(FY_WIFI_FILE, "r");
+    if (!f) return false;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    if (err) return false;
+    fySavedSSID = doc["ssid"] | "";
+    fySavedPass = doc["pass"] | "";
+    return fySavedSSID.length() > 0;
+}
+
+static bool fySaveWifiCreds(const String& ssid, const String& pass) {
+    if (!fySpiffsReady) return false;
+    File f = SPIFFS.open(FY_WIFI_FILE, "w");
+    if (!f) return false;
+    JsonDocument doc;
+    doc["ssid"] = ssid;
+    doc["pass"] = pass;
+    serializeJson(doc, f);
+    f.close();
+    return true;
+}
+
+// ============================================================================
 // KML EXPORT
 // ============================================================================
 
@@ -797,6 +831,16 @@ h4{color:#ec4899;font-size:14px;margin-bottom:8px}
 <div class="pn" id="p1"><div id="hL"><div class="empty">Loading prior session...</div></div></div>
 <div class="pn" id="p2"><div id="pC">Loading patterns...</div></div>
 <div class="pn" id="p3">
+<h4>WIFI MODE</h4>
+<div id="wSt" style="font-size:11px;color:#8b5cf6;margin-bottom:8px">Loading...</div>
+<button class="btn" onclick="toggleWf()" style="background:#6366f1;margin-bottom:4px">CONFIGURE HOTSPOT (STA)</button>
+<div id="wFm" style="display:none;margin-bottom:8px"><p style="font-size:10px;color:#8b5cf6;margin-bottom:6px">Enter your phone hotspot SSID and password. The ESP32 joins it while keeping the flockyou AP active. Once connected, the dashboard is also reachable at <b>flockyou.local</b> on the hotspot network with cellular data still working.</p>
+<input id="wSS" type="text" placeholder="Hotspot SSID" autocomplete="off" style="width:100%;padding:8px;margin-bottom:6px;background:#1a0033;color:#e0e0e0;border:1px solid #8b5cf6;border-radius:4px;font-family:inherit;font-size:13px">
+<input id="wPW" type="password" placeholder="Password" style="width:100%;padding:8px;margin-bottom:6px;background:#1a0033;color:#e0e0e0;border:1px solid #8b5cf6;border-radius:4px;font-family:inherit;font-size:13px">
+<button class="btn" onclick="saveWifi()" style="background:#22c55e">CONNECT</button>
+<button class="btn dng" onclick="clearWifi()">CLEAR / AP-ONLY MODE</button>
+</div>
+<hr class="sep">
 <h4>EXPORT DETECTIONS</h4>
 <p style="font-size:10px;color:#8b5cf6;margin-bottom:8px">Download current session to import into Flask dashboard</p>
 <button class="btn" onclick="location.href='/api/export/json'">DOWNLOAD JSON</button>
@@ -812,7 +856,7 @@ h4{color:#ec4899;font-size:14px;margin-bottom:8px}
 </div>
 <script>
 let D=[],H=[];
-function tab(i,el){document.querySelectorAll('.tb button').forEach(b=>b.classList.remove('a'));document.querySelectorAll('.pn').forEach(p=>p.classList.remove('a'));el.classList.add('a');document.getElementById('p'+i).classList.add('a');if(i===1&&!window._hL)loadHistory();if(i===2&&!window._pL)loadPat();}
+function tab(i,el){document.querySelectorAll('.tb button').forEach(b=>b.classList.remove('a'));document.querySelectorAll('.pn').forEach(p=>p.classList.remove('a'));el.classList.add('a');document.getElementById('p'+i).classList.add('a');if(i===1&&!window._hL)loadHistory();if(i===2&&!window._pL)loadPat();if(i===3)loadWifiStatus();}
 function refresh(){fetch('/api/detections').then(r=>r.json()).then(d=>{D=d;render();stats();}).catch(()=>{});}
 function render(){const el=document.getElementById('dL');if(!D.length){el.innerHTML='<div class="empty">Scanning for surveillance devices...<br>BLE active on all channels</div>';return;}
 D.sort((a,b)=>b.last-a.last);el.innerHTML=D.map(card).join('');}
@@ -830,11 +874,9 @@ h+='<div class="pg"><h3>BLE Manufacturer IDs ('+p.mfr.length+')</h3><div class="
 h+='<div class="pg"><h3>Raven UUIDs ('+p.raven.length+')</h3><div class="it">'+p.raven.map(u=>'<span style="font-size:8px">'+u+'</span>').join('')+'</div></div>';
 document.getElementById('pC').innerHTML=h;window._pL=1;}).catch(()=>{});}
 // GPS from phone -> ESP32 (wardriving)
-// NOTE: Geolocation API needs secure context (HTTPS) on most browsers.
-// HTTP works on: Android Chrome (local IPs), some Android browsers.
-// Won't work on: iOS Safari (needs HTTPS always).
-// We only request on user tap (gesture) for best permission prompt chance.
-let _gW=null,_gOk=false,_gTried=false;
+// Android Chrome: works over HTTP when http://192.168.4.1 is whitelisted in
+// chrome://flags > "Insecure origins treated as secure". GPS auto-starts on load.
+let _gW=null,_gOk=false;
 function sendGPS(p){_gOk=true;let g=document.getElementById('sG');g.textContent='OK';g.style.color='#22c55e';
 fetch('/api/gps?lat='+p.coords.latitude+'&lon='+p.coords.longitude+'&acc='+(p.coords.accuracy||0)).catch(()=>{});}
 function gpsErr(e){_gOk=false;let g=document.getElementById('sG');
@@ -849,8 +891,23 @@ _gW=navigator.geolocation.watchPosition(sendGPS,gpsErr,{enableHighAccuracy:true,
 function reqGPS(){if(!navigator.geolocation){alert('GPS not available in this browser.');return;}
 if(_gOk){return;}
 if(!window.isSecureContext){alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\\n\\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://192.168.4.1\\n\\niPhone: GPS will not work over HTTP.');}
-startGPS();_gTried=true;}
-refresh();setInterval(refresh,2500);
+startGPS();}
+function loadWifiStatus(){fetch('/api/wifi/status').then(r=>r.json()).then(d=>{
+var s=document.getElementById('wSt'),t='<b>AP:</b> 192.168.4.1';
+if(d.sta_connecting){t+=' | <b>STA:</b> <span style="color:#facc15">connecting to '+d.sta_ssid+'...<\/span>';}
+else if(d.sta_connected){t+=' | <b>STA:</b> <span style="color:#22c55e">'+d.sta_ip+' ('+d.sta_ssid+')<\/span> &mdash; <a href="http:\/\/flockyou.local" style="color:#ec4899">flockyou.local<\/a>';}
+else if(d.sta_ssid){t+=' | <b>STA:<\/b> <span style="color:#ef4444">'+d.sta_ssid+' (failed)<\/span>';}
+else{t+=' | <b>STA:<\/b> not configured';}
+s.innerHTML=t;}).catch(()=>{});}
+function toggleWf(){var f=document.getElementById('wFm');f.style.display=f.style.display==='none'?'block':'none';}
+function saveWifi(){var ss=document.getElementById('wSS').value.trim(),pw=document.getElementById('wPW').value;
+if(!ss){alert('Enter SSID');return;}
+document.getElementById('wFm').style.display='none';
+document.getElementById('wSt').innerHTML='Connecting to <b>'+ss+'<\/b>... check status in ~20s';
+fetch('/api/wifi/sta',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(ss)+'&pass='+encodeURIComponent(pw)})
+.then(r=>r.json()).then(()=>setTimeout(loadWifiStatus,22000)).catch(()=>alert('Request failed'));}
+function clearWifi(){if(!confirm('Switch to AP-only mode?'))return;fetch('/api/wifi/clear').then(r=>r.json()).then(()=>loadWifiStatus()).catch(()=>{});}
+refresh();startGPS();setInterval(refresh,2500);
 </script></body></html>
 )rawliteral";
 
@@ -1075,6 +1132,59 @@ static void fySetupServer() {
         printf("[FLOCK-YOU] All detections cleared (session saved)\n");
     });
 
+    // ---- WiFi STA endpoints ----
+
+    // GET /api/wifi/status — current WiFi state
+    fyServer.on("/api/wifi/status", HTTP_GET, [](AsyncWebServerRequest *r) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+            "{\"ap_ip\":\"192.168.4.1\",\"sta_connected\":%s,\"sta_connecting\":%s,"
+            "\"sta_ip\":\"%s\",\"sta_ssid\":\"%s\"}",
+            fySTAConnected   ? "true" : "false",
+            fySTAConnecting  ? "true" : "false",
+            fySTAIP.c_str(),
+            fySavedSSID.c_str());
+        r->send(200, "application/json", buf);
+    });
+
+    // POST /api/wifi/sta — save credentials and queue STA connection
+    fyServer.on("/api/wifi/sta", HTTP_POST, [](AsyncWebServerRequest *r) {
+        if (r->hasParam("ssid", true)) {
+            String ssid = r->getParam("ssid", true)->value();
+            String pass = r->hasParam("pass", true) ? r->getParam("pass", true)->value() : "";
+            if (ssid.length() > 0) {
+                fySavedSSID = ssid;
+                fySavedPass = pass;
+                fySaveWifiCreds(ssid, pass);
+                fySTAConnected  = false;
+                fySTAConnecting = false;
+                fySTAIP = "";
+                fySTAConnectPending = true;
+                r->send(200, "application/json", "{\"saved\":true}");
+                printf("[FLOCK-YOU] STA credentials saved for '%s'\n", ssid.c_str());
+                return;
+            }
+        }
+        r->send(400, "application/json", "{\"error\":\"ssid required\"}");
+    });
+
+    // GET /api/wifi/clear — remove STA credentials, revert to AP-only
+    fyServer.on("/api/wifi/clear", HTTP_GET, [](AsyncWebServerRequest *r) {
+        if (fySpiffsReady && SPIFFS.exists(FY_WIFI_FILE)) SPIFFS.remove(FY_WIFI_FILE);
+        fySavedSSID = "";
+        fySavedPass = "";
+        fySTAConnected  = false;
+        fySTAConnecting = false;
+        fySTAConnectPending = false;
+        fySTAIP = "";
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_AP);
+        delay(100);
+        WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
+        r->send(200, "application/json", "{\"status\":\"ap_only\"}");
+        printf("[FLOCK-YOU] STA cleared, AP-only mode\n");
+    });
+
     fyServer.begin();
     printf("[FLOCK-YOU] Web server started on port 80\n");
 }
@@ -1146,18 +1256,32 @@ void setup() {
     // Crow calls play WHILE BLE is already scanning
     fyBootBeep();
 
-    // Start WiFi AP (no need to connect to anything -- AP only)
-    WiFi.mode(WIFI_AP);
+    // Start WiFi in AP+STA mode — AP always on for phone dashboard
+    WiFi.mode(WIFI_AP_STA);
     delay(100);
     WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
     printf("[FLOCK-YOU] AP: %s / %s\n", FY_AP_SSID, FY_AP_PASS);
-    printf("[FLOCK-YOU] IP: %s\n", WiFi.softAPIP().toString().c_str());
+    printf("[FLOCK-YOU] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+
+    // Load saved STA (hotspot) credentials and queue connection attempt
+    if (fyLoadWifiCreds()) {
+        printf("[FLOCK-YOU] STA credentials found for '%s', connecting...\n", fySavedSSID.c_str());
+        fySTAConnectPending = true;
+    } else {
+        printf("[FLOCK-YOU] No STA credentials — AP-only mode\n");
+    }
+
+    // mDNS — accessible as flockyou.local when STA is connected
+    if (MDNS.begin("flockyou")) {
+        MDNS.addService("http", "tcp", 80);
+        printf("[FLOCK-YOU] mDNS: flockyou.local\n");
+    }
 
     // Start web dashboard
     fySetupServer();
 
     printf("[FLOCK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
-    printf("[FLOCK-YOU] Dashboard: http://192.168.4.1\n");
+    printf("[FLOCK-YOU] Dashboard: http://192.168.4.1 (phone hotspot: http://flockyou.local)\n");
     printf("[FLOCK-YOU] Ready - BLE GATT + AP mode\n\n");
 }
 
@@ -1180,6 +1304,38 @@ void loop() {
     if (fyCompanionChangePending) {
         fyCompanionChangePending = false;
         fyOnCompanionChange();
+    }
+
+    // STA (hotspot) connection management — non-blocking, driven by loop()
+    if (fySTAConnectPending) {
+        fySTAConnectPending = false;
+        fySTAConnecting = true;
+        fySTAConnected = false;
+        fySTAIP = "";
+        fySTAConnectStart = millis();
+        WiFi.begin(fySavedSSID.c_str(), fySavedPass.c_str());
+        printf("[FLOCK-YOU] STA: connecting to '%s'...\n", fySavedSSID.c_str());
+    }
+    if (fySTAConnecting) {
+        if (WiFi.status() == WL_CONNECTED) {
+            fySTAConnected = true;
+            fySTAIP = WiFi.localIP().toString();
+            fySTAConnecting = false;
+            MDNS.begin("flockyou");
+            MDNS.addService("http", "tcp", 80);
+            printf("[FLOCK-YOU] STA connected: %s (flockyou.local)\n", fySTAIP.c_str());
+        } else if (millis() - fySTAConnectStart > 20000) {
+            fySTAConnecting = false;
+            fySTAConnected = false;
+            fySTAIP = "";
+            printf("[FLOCK-YOU] STA connect timeout\n");
+        }
+    } else if (fySTAConnected && WiFi.status() != WL_CONNECTED) {
+        // Lost STA connection — retry
+        fySTAConnected = false;
+        fySTAIP = "";
+        fySTAConnectPending = true;
+        printf("[FLOCK-YOU] STA lost, retrying...\n");
     }
 
     // BLE scanning cycle
