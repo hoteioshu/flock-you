@@ -56,75 +56,34 @@ static unsigned long fyBleScanInterval = 3000; // ms between scans
 #define FY_AP_PASS "flockyou123"
 
 // ============================================================================
-// DETECTION PATTERNS
+// DETECTION PATTERNS — dynamic, editable via web UI, persisted to SPIFFS
 // ============================================================================
 
-// MAC address prefixes (OUIs)
+#define FY_MAX_MAC_PFX  64
+#define FY_MAX_NAMES    32
+#define FY_MAX_MFR_IDS  16
+#define FY_MAX_RAVEN    16
+#define FY_MAC_LEN       9   // "xx:xx:xx" + null
+#define FY_NAME_LEN     48
+#define FY_UUID_LEN     37   // 36-char UUID + null
 
-// Flock Safety — high-confidence OUIs (direct registration or exclusive use)
-static const char* flock_mac_prefixes[] = {
-    // FS Ext Battery devices
-    "58:8e:81", "cc:cc:cc", "ec:1b:bd", "90:35:ea", "04:0d:84",
-    "f0:82:c0", "1c:34:f1", "38:5b:44", "94:34:69", "b4:e3:f9",
-    // Flock WiFi devices
-    "70:c9:4e", "3c:91:80", "d8:f3:bc", "80:30:49", "14:5a:fc",
-    "74:4c:a1", "08:3a:88", "9c:2f:9d", "94:08:53", "e4:aa:ea",
-    // Flock Safety (direct IEEE registration)
-    "b4:1e:52"
-};
+static char fyFlockMACs[FY_MAX_MAC_PFX][FY_MAC_LEN];
+static int  fyFlockMACCount = 0;
+static char fyMfrMACs[FY_MAX_MAC_PFX][FY_MAC_LEN];
+static int  fyMfrMACCount = 0;
+static char fySTMACs[FY_MAX_MAC_PFX][FY_MAC_LEN];
+static int  fySTMACCount = 0;
+static char fyNames[FY_MAX_NAMES][FY_NAME_LEN];
+static int  fyNameCount = 0;
+static uint16_t fyMfrIDs[FY_MAX_MFR_IDS];
+static int  fyMfrIDCount = 0;
+static char fyRavenUUIDs[FY_MAX_RAVEN][FY_UUID_LEN];
+static int  fyRavenUUIDCount = 0;
 
-// Flock Safety contract manufacturers — lower confidence alone.
-// These OUIs belong to Liteon Technology and USI (Universal Scientific
-// Industrial), which produce Flock hardware but also ship unrelated
-// consumer/enterprise devices. MAC match alone may be a false positive.
-static const char* flock_mfr_mac_prefixes[] = {
-    "f4:6a:dd", "f8:a2:d6", "e0:0a:f6", "00:f4:8d", "d0:39:57",
-    "e8:d0:fc"
-};
-
-// SoundThinking (formerly ShotSpotter) — acoustic gunshot detection sensors.
-// d4:11:d6 is registered to SoundThinking in the IEEE OUI database.
-static const char* soundthinking_mac_prefixes[] = {
-    "d4:11:d6"
-};
-
-// BLE device name patterns (matched case-insensitive substring)
-static const char* device_name_patterns[] = {
-    "FS Ext Battery",
-    "Penguin",
-    "Flock",
-    "Pigvision"
-};
-
-// BLE Manufacturer Company IDs
-// Source: wgreenberg/flock-you - XUNTONG ID associated with Flock Safety devices
-static const uint16_t ble_manufacturer_ids[] = {
-    0x09C8   // XUNTONG
-};
-
-// ============================================================================
-// RAVEN SURVEILLANCE DEVICE UUID PATTERNS
-// ============================================================================
-
-#define RAVEN_DEVICE_INFO_SERVICE   "0000180a-0000-1000-8000-00805f9b34fb"
+// Keep well-known Raven service UUID constants for FW version estimation
 #define RAVEN_GPS_SERVICE           "00003100-0000-1000-8000-00805f9b34fb"
 #define RAVEN_POWER_SERVICE         "00003200-0000-1000-8000-00805f9b34fb"
-#define RAVEN_NETWORK_SERVICE       "00003300-0000-1000-8000-00805f9b34fb"
-#define RAVEN_UPLOAD_SERVICE        "00003400-0000-1000-8000-00805f9b34fb"
-#define RAVEN_ERROR_SERVICE         "00003500-0000-1000-8000-00805f9b34fb"
-#define RAVEN_OLD_HEALTH_SERVICE    "00001809-0000-1000-8000-00805f9b34fb"
 #define RAVEN_OLD_LOCATION_SERVICE  "00001819-0000-1000-8000-00805f9b34fb"
-
-static const char* raven_service_uuids[] = {
-    RAVEN_DEVICE_INFO_SERVICE,
-    RAVEN_GPS_SERVICE,
-    RAVEN_POWER_SERVICE,
-    RAVEN_NETWORK_SERVICE,
-    RAVEN_UPLOAD_SERVICE,
-    RAVEN_ERROR_SERVICE,
-    RAVEN_OLD_HEALTH_SERVICE,
-    RAVEN_OLD_LOCATION_SERVICE
-};
 
 // ============================================================================
 // DETECTION STORAGE
@@ -193,6 +152,7 @@ static unsigned long fyGPSLastUpdate = 0;
 #define FY_SESSION_FILE  "/session.json"
 #define FY_PREV_FILE     "/prev_session.json"
 #define FY_WIFI_FILE     "/wifi.json"
+#define FY_PAT_FILE      "/patterns.json"
 #define FY_SAVE_INTERVAL 15000  // Auto-save every 15 seconds (prevent data loss on quick power-cycle)
 static unsigned long fyLastSave = 0;
 static int fyLastSaveCount = 0;  // Track changes to avoid unnecessary writes
@@ -280,42 +240,165 @@ static void fyHeartbeat() {
 }
 
 // ============================================================================
+// PATTERN MANAGEMENT — init defaults, SPIFFS load/save
+// ============================================================================
+
+static void fyInitDefaultPatterns() {
+    fyFlockMACCount = 0;
+    const char* defFlockMACs[] = {
+        "58:8e:81","cc:cc:cc","ec:1b:bd","90:35:ea","04:0d:84",
+        "f0:82:c0","1c:34:f1","38:5b:44","94:34:69","b4:e3:f9",
+        "70:c9:4e","3c:91:80","d8:f3:bc","80:30:49","14:5a:fc",
+        "74:4c:a1","08:3a:88","9c:2f:9d","94:08:53","e4:aa:ea",
+        "b4:1e:52"
+    };
+    for (auto& m : defFlockMACs) {
+        if (fyFlockMACCount < FY_MAX_MAC_PFX)
+            strncpy(fyFlockMACs[fyFlockMACCount++], m, FY_MAC_LEN - 1);
+    }
+
+    fyMfrMACCount = 0;
+    const char* defMfrMACs[] = {
+        "f4:6a:dd","f8:a2:d6","e0:0a:f6","00:f4:8d","d0:39:57","e8:d0:fc"
+    };
+    for (auto& m : defMfrMACs) {
+        if (fyMfrMACCount < FY_MAX_MAC_PFX)
+            strncpy(fyMfrMACs[fyMfrMACCount++], m, FY_MAC_LEN - 1);
+    }
+
+    fySTMACCount = 0;
+    strncpy(fySTMACs[fySTMACCount++], "d4:11:d6", FY_MAC_LEN - 1);
+
+    fyNameCount = 0;
+    const char* defNames[] = {"FS Ext Battery","Penguin","Flock","Pigvision"};
+    for (auto& n : defNames) {
+        if (fyNameCount < FY_MAX_NAMES)
+            strncpy(fyNames[fyNameCount++], n, FY_NAME_LEN - 1);
+    }
+
+    fyMfrIDCount = 0;
+    fyMfrIDs[fyMfrIDCount++] = 0x09C8;  // XUNTONG
+
+    fyRavenUUIDCount = 0;
+    const char* defRaven[] = {
+        "0000180a-0000-1000-8000-00805f9b34fb",
+        "00003100-0000-1000-8000-00805f9b34fb",
+        "00003200-0000-1000-8000-00805f9b34fb",
+        "00003300-0000-1000-8000-00805f9b34fb",
+        "00003400-0000-1000-8000-00805f9b34fb",
+        "00003500-0000-1000-8000-00805f9b34fb",
+        "00001809-0000-1000-8000-00805f9b34fb",
+        "00001819-0000-1000-8000-00805f9b34fb"
+    };
+    for (auto& u : defRaven) {
+        if (fyRavenUUIDCount < FY_MAX_RAVEN)
+            strncpy(fyRavenUUIDs[fyRavenUUIDCount++], u, FY_UUID_LEN - 1);
+    }
+}
+
+static void fySavePatterns() {
+    if (!fySpiffsReady) return;
+    File f = SPIFFS.open(FY_PAT_FILE, "w");
+    if (!f) return;
+    f.print("{\"flock_mac\":[");
+    for (int i = 0; i < fyFlockMACCount; i++) { if (i) f.print(","); f.printf("\"%s\"", fyFlockMACs[i]); }
+    f.print("],\"mfr_mac\":[");
+    for (int i = 0; i < fyMfrMACCount; i++)   { if (i) f.print(","); f.printf("\"%s\"", fyMfrMACs[i]); }
+    f.print("],\"st_mac\":[");
+    for (int i = 0; i < fySTMACCount; i++)    { if (i) f.print(","); f.printf("\"%s\"", fySTMACs[i]); }
+    f.print("],\"names\":[");
+    for (int i = 0; i < fyNameCount; i++)     { if (i) f.print(","); f.printf("\"%s\"", fyNames[i]); }
+    f.print("],\"mfr_id\":[");
+    for (int i = 0; i < fyMfrIDCount; i++)    { if (i) f.print(","); f.printf("%u", fyMfrIDs[i]); }
+    f.print("],\"raven\":[");
+    for (int i = 0; i < fyRavenUUIDCount; i++){ if (i) f.print(","); f.printf("\"%s\"", fyRavenUUIDs[i]); }
+    f.print("]}");
+    f.close();
+    printf("[FLOCK-YOU] Patterns saved to SPIFFS\n");
+}
+
+static void fyLoadPatterns() {
+    fyInitDefaultPatterns();
+    if (!fySpiffsReady || !SPIFFS.exists(FY_PAT_FILE)) {
+        printf("[FLOCK-YOU] Using default patterns\n");
+        return;
+    }
+    File f = SPIFFS.open(FY_PAT_FILE, "r");
+    if (!f) return;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    if (err) { printf("[FLOCK-YOU] Pattern file parse error, using defaults\n"); return; }
+
+    auto loadStrs = [&](const char* key, char arr[][FY_NAME_LEN], int maxLen, int& cnt, int maxCnt) {
+        cnt = 0;
+        for (JsonVariant v : doc[key].as<JsonArray>()) {
+            if (cnt >= maxCnt) break;
+            strncpy(arr[cnt++], v.as<const char*>(), maxLen - 1);
+        }
+    };
+    auto loadMACs = [&](const char* key, char arr[][FY_MAC_LEN], int& cnt) {
+        cnt = 0;
+        for (JsonVariant v : doc[key].as<JsonArray>()) {
+            if (cnt >= FY_MAX_MAC_PFX) break;
+            strncpy(arr[cnt++], v.as<const char*>(), FY_MAC_LEN - 1);
+        }
+    };
+    auto loadRaven = [&](const char* key, char arr[][FY_UUID_LEN], int& cnt) {
+        cnt = 0;
+        for (JsonVariant v : doc[key].as<JsonArray>()) {
+            if (cnt >= FY_MAX_RAVEN) break;
+            strncpy(arr[cnt++], v.as<const char*>(), FY_UUID_LEN - 1);
+        }
+    };
+
+    loadMACs("flock_mac", fyFlockMACs, fyFlockMACCount);
+    loadMACs("mfr_mac",   fyMfrMACs,   fyMfrMACCount);
+    loadMACs("st_mac",    fySTMACs,    fySTMACCount);
+    loadStrs("names",  fyNames,      FY_NAME_LEN, fyNameCount,      FY_MAX_NAMES);
+    loadRaven("raven",  fyRavenUUIDs, fyRavenUUIDCount);
+
+    fyMfrIDCount = 0;
+    for (JsonVariant v : doc["mfr_id"].as<JsonArray>()) {
+        if (fyMfrIDCount >= FY_MAX_MFR_IDS) break;
+        fyMfrIDs[fyMfrIDCount++] = (uint16_t)v.as<unsigned int>();
+    }
+
+    printf("[FLOCK-YOU] Patterns loaded from SPIFFS\n");
+}
+
+// ============================================================================
 // DETECTION HELPERS
 // ============================================================================
 
 static bool checkFlockMAC(const char* mac_str) {
-    for (size_t i = 0; i < sizeof(flock_mac_prefixes)/sizeof(flock_mac_prefixes[0]); i++) {
-        if (strncasecmp(mac_str, flock_mac_prefixes[i], 8) == 0) return true;
-    }
+    for (int i = 0; i < fyFlockMACCount; i++)
+        if (strncasecmp(mac_str, fyFlockMACs[i], 8) == 0) return true;
     return false;
 }
 
 static bool checkFlockMfrMAC(const char* mac_str) {
-    for (size_t i = 0; i < sizeof(flock_mfr_mac_prefixes)/sizeof(flock_mfr_mac_prefixes[0]); i++) {
-        if (strncasecmp(mac_str, flock_mfr_mac_prefixes[i], 8) == 0) return true;
-    }
+    for (int i = 0; i < fyMfrMACCount; i++)
+        if (strncasecmp(mac_str, fyMfrMACs[i], 8) == 0) return true;
     return false;
 }
 
 static bool checkSoundThinkingMAC(const char* mac_str) {
-    for (size_t i = 0; i < sizeof(soundthinking_mac_prefixes)/sizeof(soundthinking_mac_prefixes[0]); i++) {
-        if (strncasecmp(mac_str, soundthinking_mac_prefixes[i], 8) == 0) return true;
-    }
+    for (int i = 0; i < fySTMACCount; i++)
+        if (strncasecmp(mac_str, fySTMACs[i], 8) == 0) return true;
     return false;
 }
 
 static bool checkDeviceName(const char* name) {
     if (!name || !name[0]) return false;
-    for (size_t i = 0; i < sizeof(device_name_patterns)/sizeof(device_name_patterns[0]); i++) {
-        if (strcasestr(name, device_name_patterns[i])) return true;
-    }
+    for (int i = 0; i < fyNameCount; i++)
+        if (strcasestr(name, fyNames[i])) return true;
     return false;
 }
 
 static bool checkManufacturerID(uint16_t id) {
-    for (size_t i = 0; i < sizeof(ble_manufacturer_ids)/sizeof(ble_manufacturer_ids[0]); i++) {
-        if (ble_manufacturer_ids[i] == id) return true;
-    }
+    for (int i = 0; i < fyMfrIDCount; i++)
+        if (fyMfrIDs[i] == id) return true;
     return false;
 }
 
@@ -330,8 +413,8 @@ static bool checkRavenUUID(NimBLEAdvertisedDevice* device, char* out_uuid = null
     for (int i = 0; i < count; i++) {
         NimBLEUUID svc = device->getServiceUUID(i);
         std::string str = svc.toString();
-        for (size_t j = 0; j < sizeof(raven_service_uuids)/sizeof(raven_service_uuids[0]); j++) {
-            if (strcasecmp(str.c_str(), raven_service_uuids[j]) == 0) {
+        for (int j = 0; j < fyRavenUUIDCount; j++) {
+            if (strcasecmp(str.c_str(), fyRavenUUIDs[j]) == 0) {
                 if (out_uuid) strncpy(out_uuid, str.c_str(), 40);
                 return true;
             }
@@ -803,7 +886,11 @@ body{font-family:'Courier New',monospace;background:#0a0012;color:#e0e0e0;displa
 .pg{margin-bottom:12px}
 .pg h3{color:#ec4899;font-size:14px;margin-bottom:4px;border-bottom:1px solid rgba(139,92,246,.19);padding-bottom:4px}
 .pg .it{display:flex;flex-wrap:wrap;gap:4px;font-size:12px}
-.pg .it span{background:rgba(139,92,246,.15);padding:3px 6px;border-radius:4px;border:1px solid rgba(139,92,246,.12)}
+.pg .it .iv{display:inline-flex;align-items:center;background:rgba(139,92,246,.15);padding:2px 4px 2px 6px;border-radius:4px;border:1px solid rgba(139,92,246,.12);margin:2px}
+.pg .it .iv button{background:none;border:none;color:#ef4444;cursor:pointer;font-size:12px;padding:0 3px;margin-left:2px;line-height:1}
+.ai{display:flex;gap:4px;margin-top:8px}
+.ai input{flex:1;padding:6px 8px;background:#1a0033;color:#e0e0e0;border:1px solid #8b5cf6;border-radius:4px;font-family:inherit;font-size:12px}
+.ai button{padding:6px 10px;background:#8b5cf6;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold}
 .btn{display:block;width:100%;padding:10px;margin-bottom:8px;background:#8b5cf6;color:#fff;border:none;border-radius:5px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold}
 .btn:active{background:#ec4899}
 .btn.dng{background:#ef4444}
@@ -856,7 +943,7 @@ h4{color:#ec4899;font-size:14px;margin-bottom:8px}
 </div>
 <script>
 let D=[],H=[];
-function tab(i,el){document.querySelectorAll('.tb button').forEach(b=>b.classList.remove('a'));document.querySelectorAll('.pn').forEach(p=>p.classList.remove('a'));el.classList.add('a');document.getElementById('p'+i).classList.add('a');if(i===1&&!window._hL)loadHistory();if(i===2&&!window._pL)loadPat();if(i===3)loadWifiStatus();}
+function tab(i,el){document.querySelectorAll('.tb button').forEach(b=>b.classList.remove('a'));document.querySelectorAll('.pn').forEach(p=>p.classList.remove('a'));el.classList.add('a');document.getElementById('p'+i).classList.add('a');if(i===1&&!window._hL)loadHistory();if(i===2)loadPat();if(i===3)loadWifiStatus();}
 function refresh(){fetch('/api/detections').then(r=>r.json()).then(d=>{D=d;render();stats();}).catch(()=>{});}
 function render(){const el=document.getElementById('dL');if(!D.length){el.innerHTML='<div class="empty">Scanning for surveillance devices...<br>BLE active on all channels</div>';return;}
 D.sort((a,b)=>b.last-a.last);el.innerHTML=D.map(card).join('');}
@@ -865,14 +952,22 @@ fetch('/api/stats').then(r=>r.json()).then(s=>{let g=document.getElementById('sG
 function card(d){return '<div class="det"><div class="mac">'+d.mac+(d.name?'<span class="nm">'+d.name+'</span>':'')+'</div><div class="inf"><span>RSSI: '+d.rssi+'</span><span>'+d.method+'</span><span style="color:#ec4899;font-weight:bold">&times;'+d.count+'</span>'+(d.raven?'<span class="rv">RAVEN '+d.fw+'</span>':'')+(d.gps?'<span style="color:#22c55e">&#9673; '+d.gps.lat.toFixed(5)+','+d.gps.lon.toFixed(5)+'</span>':'<span style="color:#666">no gps</span>')+'</div></div>';}
 function loadHistory(){fetch('/api/history').then(r=>r.json()).then(d=>{H=d;let el=document.getElementById('hL');if(!H.length){el.innerHTML='<div class="empty">No prior session data</div>';return;}
 H.sort((a,b)=>b.last-a.last);el.innerHTML='<div style="font-size:11px;color:#8b5cf6;margin-bottom:8px">'+H.length+' detections from prior session</div>'+H.map(card).join('');window._hL=1;}).catch(()=>{document.getElementById('hL').innerHTML='<div class="empty">No prior session data</div>';});}
-function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{let h='';
-h+='<div class="pg"><h3>Flock MAC Prefixes ('+p.macs.length+')</h3><div class="it">'+p.macs.map(m=>'<span>'+m+'</span>').join('')+'</div></div>';
-h+='<div class="pg"><h3>Contract Mfr MACs ('+p.macs_mfr.length+')</h3><div class="it">'+p.macs_mfr.map(m=>'<span>'+m+'</span>').join('')+'</div></div>';
-h+='<div class="pg"><h3>SoundThinking MACs ('+p.macs_soundthinking.length+')</h3><div class="it">'+p.macs_soundthinking.map(m=>'<span>'+m+'</span>').join('')+'</div></div>';
-h+='<div class="pg"><h3>BLE Device Names ('+p.names.length+')</h3><div class="it">'+p.names.map(n=>'<span>'+n+'</span>').join('')+'</div></div>';
-h+='<div class="pg"><h3>BLE Manufacturer IDs ('+p.mfr.length+')</h3><div class="it">'+p.mfr.map(m=>'<span>0x'+m.toString(16).toUpperCase().padStart(4,'0')+'</span>').join('')+'</div></div>';
-h+='<div class="pg"><h3>Raven UUIDs ('+p.raven.length+')</h3><div class="it">'+p.raven.map(u=>'<span style="font-size:8px">'+u+'</span>').join('')+'</div></div>';
-document.getElementById('pC').innerHTML=h;window._pL=1;}).catch(()=>{});}
+function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{
+function sec(title,type,items,fmt){
+var del=items.map(v=>'<div class="iv"><span>'+fmt(v)+'</span><button onclick="patDel(\''+type+'\',\''+v+'\')" title="Delete">&times;<\/button><\/div>').join('');
+return '<div class="pg"><h3>'+title+' ('+items.length+')<\/h3><div class="it">'+del+'<\/div><div class="ai"><input id="ai_'+type+'" type="text" placeholder="'+placeholders[type]+'"><button onclick="patAdd(\''+type+'\')">ADD<\/button><\/div><\/div>';}
+var placeholders={flock_mac:'aa:bb:cc',mfr_mac:'aa:bb:cc',st_mac:'aa:bb:cc',name:'device name',mfr_id:'0x09C8',raven:'00001234-...'};var h='';
+h+=sec('Flock Safety MACs','flock_mac',p.flock_mac,v=>v);
+h+=sec('Contract Mfr MACs','mfr_mac',p.mfr_mac,v=>v);
+h+=sec('SoundThinking MACs','st_mac',p.st_mac,v=>v);
+h+=sec('BLE Device Names','name',p.names,v=>v);
+h+=sec('Manufacturer IDs','mfr_id',p.mfr_id,v=>'0x'+Number(v).toString(16).toUpperCase().padStart(4,'0'));
+h+=sec('Raven UUIDs','raven',p.raven,v=>'<span style="font-size:9px">'+v+'<\/span>');
+h+='<button class="btn dng" style="margin-top:10px" onclick="patReset()">RESET TO FIRMWARE DEFAULTS<\/button>';
+document.getElementById('pC').innerHTML=h;}).catch(()=>{});}
+function patDel(type,value){fetch('/api/patterns/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'type='+encodeURIComponent(type)+'&value='+encodeURIComponent(value)}).then(()=>loadPat()).catch(()=>alert('Delete failed'));}
+function patAdd(type){var inp=document.getElementById('ai_'+type);if(!inp)return;var val=inp.value.trim();if(!val){alert('Enter a value');return;}fetch('/api/patterns/add',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'type='+encodeURIComponent(type)+'&value='+encodeURIComponent(val)}).then(r=>r.json()).then(d=>{if(d.error){alert(d.error);}else{inp.value='';loadPat();}}).catch(()=>alert('Add failed'));}
+function patReset(){if(!confirm('Reset ALL patterns to firmware defaults? Custom entries will be lost.'))return;fetch('/api/patterns/reset',{method:'POST'}).then(()=>loadPat()).catch(()=>alert('Reset failed'));}
 // GPS from phone -> ESP32 (wardriving)
 // Android Chrome: works over HTTP when http://192.168.4.1 is whitelisted in
 // chrome://flags > "Insecure origins treated as secure". GPS auto-starts on load.
@@ -963,41 +1058,114 @@ static void fySetupServer() {
         }
     });
 
-    // API: Pattern database
+    // API: Pattern database (GET)
     fyServer.on("/api/patterns", HTTP_GET, [](AsyncWebServerRequest *r) {
         AsyncResponseStream *resp = r->beginResponseStream("application/json");
-        resp->print("{\"macs\":[");
-        for (size_t i = 0; i < sizeof(flock_mac_prefixes)/sizeof(flock_mac_prefixes[0]); i++) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", flock_mac_prefixes[i]);
-        }
-        resp->print("],\"macs_mfr\":[");
-        for (size_t i = 0; i < sizeof(flock_mfr_mac_prefixes)/sizeof(flock_mfr_mac_prefixes[0]); i++) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", flock_mfr_mac_prefixes[i]);
-        }
-        resp->print("],\"macs_soundthinking\":[");
-        for (size_t i = 0; i < sizeof(soundthinking_mac_prefixes)/sizeof(soundthinking_mac_prefixes[0]); i++) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", soundthinking_mac_prefixes[i]);
-        }
+        resp->print("{\"flock_mac\":[");
+        for (int i = 0; i < fyFlockMACCount; i++)   { if (i) resp->print(","); resp->printf("\"%s\"", fyFlockMACs[i]); }
+        resp->print("],\"mfr_mac\":[");
+        for (int i = 0; i < fyMfrMACCount; i++)     { if (i) resp->print(","); resp->printf("\"%s\"", fyMfrMACs[i]); }
+        resp->print("],\"st_mac\":[");
+        for (int i = 0; i < fySTMACCount; i++)      { if (i) resp->print(","); resp->printf("\"%s\"", fySTMACs[i]); }
         resp->print("],\"names\":[");
-        for (size_t i = 0; i < sizeof(device_name_patterns)/sizeof(device_name_patterns[0]); i++) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", device_name_patterns[i]);
-        }
-        resp->print("],\"mfr\":[");
-        for (size_t i = 0; i < sizeof(ble_manufacturer_ids)/sizeof(ble_manufacturer_ids[0]); i++) {
-            if (i > 0) resp->print(",");
-            resp->printf("%u", ble_manufacturer_ids[i]);
-        }
+        for (int i = 0; i < fyNameCount; i++)       { if (i) resp->print(","); resp->printf("\"%s\"", fyNames[i]); }
+        resp->print("],\"mfr_id\":[");
+        for (int i = 0; i < fyMfrIDCount; i++)      { if (i) resp->print(","); resp->printf("%u", fyMfrIDs[i]); }
         resp->print("],\"raven\":[");
-        for (size_t i = 0; i < sizeof(raven_service_uuids)/sizeof(raven_service_uuids[0]); i++) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", raven_service_uuids[i]);
-        }
+        for (int i = 0; i < fyRavenUUIDCount; i++)  { if (i) resp->print(","); resp->printf("\"%s\"", fyRavenUUIDs[i]); }
         resp->print("]}");
         r->send(resp);
+    });
+
+    // API: Add a pattern entry
+    // POST /api/patterns/add  body: type=flock_mac&value=xx:xx:xx
+    fyServer.on("/api/patterns/add", HTTP_POST, [](AsyncWebServerRequest *r) {
+        if (!r->hasParam("type", true) || !r->hasParam("value", true)) {
+            r->send(400, "application/json", "{\"error\":\"type and value required\"}");
+            return;
+        }
+        String type  = r->getParam("type",  true)->value();
+        String value = r->getParam("value", true)->value();
+        value.trim(); value.toLowerCase();
+        bool ok = false;
+        if (type == "flock_mac" && fyFlockMACCount < FY_MAX_MAC_PFX) {
+            strncpy(fyFlockMACs[fyFlockMACCount++], value.c_str(), FY_MAC_LEN - 1); ok = true;
+        } else if (type == "mfr_mac" && fyMfrMACCount < FY_MAX_MAC_PFX) {
+            strncpy(fyMfrMACs[fyMfrMACCount++], value.c_str(), FY_MAC_LEN - 1); ok = true;
+        } else if (type == "st_mac" && fySTMACCount < FY_MAX_MAC_PFX) {
+            strncpy(fySTMACs[fySTMACCount++], value.c_str(), FY_MAC_LEN - 1); ok = true;
+        } else if (type == "name" && fyNameCount < FY_MAX_NAMES) {
+            strncpy(fyNames[fyNameCount++], r->getParam("value", true)->value().c_str(), FY_NAME_LEN - 1); ok = true;
+        } else if (type == "mfr_id" && fyMfrIDCount < FY_MAX_MFR_IDS) {
+            fyMfrIDs[fyMfrIDCount++] = (uint16_t)strtoul(value.c_str(), nullptr, 0); ok = true;
+        } else if (type == "raven" && fyRavenUUIDCount < FY_MAX_RAVEN) {
+            strncpy(fyRavenUUIDs[fyRavenUUIDCount++], value.c_str(), FY_UUID_LEN - 1); ok = true;
+        }
+        if (ok) { fySavePatterns(); r->send(200, "application/json", "{\"status\":\"added\"}"); }
+        else    { r->send(400, "application/json", "{\"error\":\"unknown type or limit reached\"}"); }
+    });
+
+    // API: Delete a pattern entry
+    // POST /api/patterns/delete  body: type=flock_mac&value=xx:xx:xx
+    fyServer.on("/api/patterns/delete", HTTP_POST, [](AsyncWebServerRequest *r) {
+        if (!r->hasParam("type", true) || !r->hasParam("value", true)) {
+            r->send(400, "application/json", "{\"error\":\"type and value required\"}");
+            return;
+        }
+        String type  = r->getParam("type",  true)->value();
+        String value = r->getParam("value", true)->value();
+        value.trim();
+        bool ok = false;
+
+        auto removeStr = [&](char arr[][FY_NAME_LEN], int& cnt, int maxLen) {
+            for (int i = 0; i < cnt; i++) {
+                if (strcasecmp(arr[i], value.c_str()) == 0) {
+                    memmove(arr[i], arr[i+1], (cnt - i - 1) * maxLen);
+                    cnt--; ok = true; return;
+                }
+            }
+        };
+        auto removeMAC = [&](char arr[][FY_MAC_LEN], int& cnt) {
+            for (int i = 0; i < cnt; i++) {
+                if (strcasecmp(arr[i], value.c_str()) == 0) {
+                    memmove(arr[i], arr[i+1], (cnt - i - 1) * FY_MAC_LEN);
+                    cnt--; ok = true; return;
+                }
+            }
+        };
+        auto removeRaven = [&](char arr[][FY_UUID_LEN], int& cnt) {
+            for (int i = 0; i < cnt; i++) {
+                if (strcasecmp(arr[i], value.c_str()) == 0) {
+                    memmove(arr[i], arr[i+1], (cnt - i - 1) * FY_UUID_LEN);
+                    cnt--; ok = true; return;
+                }
+            }
+        };
+
+        if      (type == "flock_mac") removeMAC(fyFlockMACs, fyFlockMACCount);
+        else if (type == "mfr_mac")   removeMAC(fyMfrMACs,   fyMfrMACCount);
+        else if (type == "st_mac")    removeMAC(fySTMACs,    fySTMACCount);
+        else if (type == "name")      removeStr(fyNames,      fyNameCount,      FY_NAME_LEN);
+        else if (type == "raven")     removeRaven(fyRavenUUIDs, fyRavenUUIDCount);
+        else if (type == "mfr_id") {
+            uint16_t id = (uint16_t)strtoul(value.c_str(), nullptr, 0);
+            for (int i = 0; i < fyMfrIDCount; i++) {
+                if (fyMfrIDs[i] == id) {
+                    memmove(&fyMfrIDs[i], &fyMfrIDs[i+1], (fyMfrIDCount - i - 1) * sizeof(uint16_t));
+                    fyMfrIDCount--; ok = true; break;
+                }
+            }
+        }
+        if (ok) { fySavePatterns(); r->send(200, "application/json", "{\"status\":\"deleted\"}"); }
+        else    { r->send(404, "application/json", "{\"error\":\"not found\"}"); }
+    });
+
+    // API: Reset patterns to firmware defaults
+    fyServer.on("/api/patterns/reset", HTTP_POST, [](AsyncWebServerRequest *r) {
+        fyInitDefaultPatterns();
+        if (fySpiffsReady && SPIFFS.exists(FY_PAT_FILE)) SPIFFS.remove(FY_PAT_FILE);
+        r->send(200, "application/json", "{\"status\":\"reset\"}");
+        printf("[FLOCK-YOU] Patterns reset to defaults\n");
     });
 
     // API: Export JSON (downloadable file)
@@ -1209,6 +1377,7 @@ void setup() {
     if (SPIFFS.begin(true)) {
         fySpiffsReady = true;
         printf("[FLOCK-YOU] SPIFFS ready\n");
+        fyLoadPatterns();
         // Promote last session to prev_session before we start a new one
         fyPromotePrevSession();
     } else {
