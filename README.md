@@ -60,12 +60,12 @@ There are two ways to use the dashboard on your phone. Both can be configured fr
 ### Option B — Phone Hotspot (recommended, phone keeps cellular)
 
 1. Turn on your phone's **mobile hotspot**
-2. Connect to the `flockyou` AP first and open `http://192.168.4.1`
-3. Go to **TOOLS → WIFI MODE → CONFIGURE HOTSPOT (STA)**
-4. Enter your hotspot SSID and password, tap **CONNECT**
-5. After ~20 seconds the ESP32 joins your hotspot. You can now:
-   - Disconnect from `flockyou` AP and reconnect to your hotspot
-   - Open `http://flockyou.local` in Chrome — dashboard loads over your hotspot with cellular data intact
+2. In your phone's **WiFi settings**, connect to the `flockyou` network (password `flockyou123`) — this is a WiFi network broadcast by the ESP32 itself
+3. Open Chrome and go to `http://192.168.4.1` — the dashboard loads
+4. Go to **TOOLS → WIFI MODE → CONFIGURE HOTSPOT (STA)**
+5. Enter your **phone's hotspot name and password**, tap **CONNECT**
+6. After ~20 seconds the ESP32 has joined your hotspot. Go back to WiFi settings on your phone, disconnect from `flockyou`, and reconnect to your own hotspot
+7. Open Chrome and go to `http://flockyou.local` — dashboard loads over your hotspot with cellular data intact
 
 Credentials are saved to flash and reconnected automatically on every boot.
 
