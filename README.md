@@ -89,34 +89,85 @@ After relaunching, the GPS indicator in the stats bar will show `OK` automatical
 
 ## Hardware
 
-**Board:** ESP32-DevKitC-32E (16MB flash)
+Two boards are supported. Select the correct PlatformIO environment when building (see [Building & Flashing](#building--flashing)).
+
+### ESP32-DevKitC-32E (`esp32devkitc_16mb`) — recommended
+
+| Attribute | Value |
+|-----------|-------|
+| Flash | 16 MB physical / 4 MB mapped (DIO, 40 MHz) |
+| CPU | 240 MHz dual-core Xtensa LX6 |
+| USB-serial | CP2102 / CH340 (via onboard USB-UART bridge) |
 
 | Pin | Function |
 |-----|----------|
 | GPIO 25 | Piezo buzzer |
 | GPIO 21 | LED (optional) |
 
+> **Note:** Do not use GPIO3 for any output — it is UART0 RX, shared with the USB-UART bridge.
+
+### Seeed Studio XIAO ESP32-S3 (`xiao_esp32s3`)
+
+| Attribute | Value |
+|-----------|-------|
+| Flash | 8 MB (QIO, 80 MHz) |
+| CPU | 240 MHz dual-core Xtensa LX7 |
+| USB-serial | Native USB CDC (no external bridge) |
+
+| Pin | Label | Function |
+|-----|-------|----------|
+| GPIO 4 | D3 | Piezo buzzer |
+| GPIO 21 | — | LED (optional, if broken out) |
+
+> **Note:** The XIAO uses native USB CDC. `Serial` output appears only after the CDC connection is established; add a small `delay(1500)` after `Serial.begin()` if early boot messages are missing.
+
 ---
 
 ## Building & Flashing
 
-Requires [PlatformIO](https://platformio.org/).
+Requires [PlatformIO](https://platformio.org/). VS Code users: install the [PlatformIO IDE extension](https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide).
+
+Two build environments are defined in `platformio.ini`:
+
+| Environment | Board | Partition file |
+|-------------|-------|----------------|
+| `esp32devkitc_16mb` | ESP32-DevKitC-32E | `partitions.csv` (4 MB mapped) |
+| `xiao_esp32s3` | Seeed XIAO ESP32-S3 | `partitions_s3.csv` (8 MB) |
+
+The default environment is `esp32devkitc_16mb`. Pass `-e <env>` to target the other board.
+
+### ESP32-DevKitC-32E
 
 ```bash
 cd flock-you
-pio run                       # build
-pio run -t upload             # flash
-pio device monitor            # serial output (115200 baud)
-pio run -t uploadfs           # upload SPIFFS filesystem image
+pio run -e esp32devkitc_16mb                    # build
+pio run -e esp32devkitc_16mb -t upload          # flash
+pio run -e esp32devkitc_16mb -t upload --upload-port COM13   # specify port
+pio run -e esp32devkitc_16mb -t uploadfs        # upload SPIFFS image
+pio device monitor                              # serial output (115200 baud)
 ```
 
-To flash to a specific COM port:
+### Seeed XIAO ESP32-S3
 
 ```bash
-pio run -t upload --upload-port COM14
+cd flock-you
+pio run -e xiao_esp32s3                         # build
+pio run -e xiao_esp32s3 -t upload               # flash (native USB)
+pio run -e xiao_esp32s3 -t upload --upload-port COM5     # specify port
+pio run -e xiao_esp32s3 -t uploadfs             # upload SPIFFS image
+pio device monitor                              # serial output (115200 baud)
 ```
 
-**Dependencies** (managed by PlatformIO):
+> **XIAO first-flash tip:** Hold the **BOOT** button while connecting USB, then run the upload command. Subsequent uploads work without the button press.
+
+### Shorthand (default env)
+
+```bash
+pio run            # build default (DevKitC)
+pio run -t upload  # flash default
+```
+
+**Dependencies** (managed automatically by PlatformIO):
 
 - `NimBLE-Arduino` — BLE scanning
 - `ESP Async WebServer` + `AsyncTCP` — web dashboard
@@ -177,7 +228,7 @@ Flock-You is part of the OUI-SPY firmware family:
 | **[OUI-SPY Unified](https://github.com/colonelpanichacks/oui-spy-unified-blue)** | Multi-mode BLE + WiFi detector | ESP32-S3 / ESP32-C5 |
 | **[OUI-SPY Detector](https://github.com/colonelpanichacks/ouispy-detector)** | Targeted BLE scanner with OUI filtering | ESP32-S3 |
 | **[OUI-SPY Foxhunter](https://github.com/colonelpanichacks/ouispy-foxhunter)** | RSSI-based proximity tracker | ESP32-S3 |
-| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety / Raven surveillance detection (this project) | ESP32-DevKitC |
+| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety / Raven surveillance detection (this project) | ESP32-DevKitC-32E / XIAO ESP32-S3 |
 | **[Sky-Spy](https://github.com/colonelpanichacks/Sky-Spy)** | Drone Remote ID detection | ESP32-S3 / ESP32-C5 |
 | **[Remote-ID-Spoofer](https://github.com/colonelpanichacks/Remote-ID-Spoofer)** | WiFi Remote ID spoofer & simulator with swarm mode | ESP32-S3 |
 | **[OUI-SPY UniPwn](https://github.com/colonelpanichacks/Oui-Spy-UniPwn)** | Unitree robot exploitation system | ESP32-S3 |

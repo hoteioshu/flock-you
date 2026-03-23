@@ -33,7 +33,13 @@
 // CONFIGURATION
 // ============================================================================
 
-#define BUZZER_PIN 25  // GPIO25 — GPIO3 is U0RXD (UART0 RX) on standard ESP32, conflicts with serial
+// Buzzer GPIO — overridden per-board via -DFY_BUZZER_PIN=N in platformio.ini
+// DevKitC default: 25  (GPIO3 is UART0 RX on standard ESP32, conflicts with serial)
+// XIAO ESP32-S3:   4   (D3 on XIAO header)
+#ifndef FY_BUZZER_PIN
+#  define FY_BUZZER_PIN 25
+#endif
+#define BUZZER_PIN FY_BUZZER_PIN
 
 // Audio
 #define LOW_FREQ 200
