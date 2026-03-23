@@ -32,7 +32,7 @@
 // CONFIGURATION
 // ============================================================================
 
-#define BUZZER_PIN 3
+#define BUZZER_PIN 25  // GPIO25 — GPIO3 is U0RXD (UART0 RX) on standard ESP32, conflicts with serial
 
 // Audio
 #define LOW_FREQ 200
