@@ -91,7 +91,7 @@ After relaunching, the GPS indicator in the stats bar will show `OK` automatical
 
 Two boards are supported. Select the correct PlatformIO environment when building (see [Building & Flashing](#building--flashing)).
 
-### ESP32-DevKitC-32E (`esp32devkitc_16mb`) — recommended
+### ESP32-DevKitC-32E (`esp32devkitc_16mb`) — default
 
 | Attribute | Value |
 |-----------|-------|
@@ -134,16 +134,16 @@ Two build environments are defined in `platformio.ini`:
 | `esp32devkitc_16mb` | ESP32-DevKitC-32E | `partitions.csv` (4 MB mapped) |
 | `xiao_esp32s3` | Seeed XIAO ESP32-S3 | `partitions_s3.csv` (8 MB) |
 
-The default environment is `esp32devkitc_16mb`. Pass `-e <env>` to target the other board.
+`esp32devkitc_16mb` is the default environment — all plain `pio` commands (without `-e`) target the DevKitC automatically. Use `-e xiao_esp32s3` only when building for the XIAO.
 
-### ESP32-DevKitC-32E
+### ESP32-DevKitC-32E (default)
 
 ```bash
 cd flock-you
-pio run -e esp32devkitc_16mb                    # build
-pio run -e esp32devkitc_16mb -t upload          # flash
-pio run -e esp32devkitc_16mb -t upload --upload-port COM13   # specify port
-pio run -e esp32devkitc_16mb -t uploadfs        # upload SPIFFS image
+pio run                                         # build
+pio run -t upload                               # flash
+pio run -t upload --upload-port COM13           # specify port
+pio run -t uploadfs                             # upload SPIFFS image
 pio device monitor                              # serial output (115200 baud)
 ```
 
@@ -159,13 +159,6 @@ pio device monitor                              # serial output (115200 baud)
 ```
 
 > **XIAO first-flash tip:** Hold the **BOOT** button while connecting USB, then run the upload command. Subsequent uploads work without the button press.
-
-### Shorthand (default env)
-
-```bash
-pio run            # build default (DevKitC)
-pio run -t upload  # flash default
-```
 
 **Dependencies** (managed automatically by PlatformIO):
 
