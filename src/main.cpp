@@ -106,6 +106,8 @@ struct FYDetection {
     int count;
     bool isRaven;
     char ravenFW[16];
+    uint16_t mfrID;     // BLE manufacturer company ID (first seen in adv data)
+    bool hasMfrID;
     // GPS from phone (wardriving)
     double gpsLat;
     double gpsLon;
@@ -518,7 +520,8 @@ static void fyAttachGPS(FYDetection& d) {
 
 static int fyAddDetection(const char* mac, const char* name, int rssi,
                           const char* method, bool isRaven = false,
-                          const char* ravenFW = "") {
+                          const char* ravenFW = "",
+                          uint16_t mfrID = 0, bool hasMfrID = false) {
     if (!fyMutex || xSemaphoreTake(fyMutex, pdMS_TO_TICKS(100)) != pdTRUE) return -1;
 
     // Update existing by MAC
@@ -555,6 +558,8 @@ static int fyAddDetection(const char* mac, const char* name, int rssi,
         d.count = 1;
         d.isRaven = isRaven;
         strncpy(d.ravenFW, ravenFW ? ravenFW : "", sizeof(d.ravenFW) - 1);
+        d.mfrID = mfrID;
+        d.hasMfrID = hasMfrID;
         // Attach GPS from phone
         fyAttachGPS(d);
         int idx = fyDetCount++;
@@ -645,6 +650,18 @@ class FYBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
         bool isRaven = false;
         const char* ravenFW = "";
 
+        // Extract manufacturer company ID from first advertising record (for display)
+        uint16_t advMfrID = 0;
+        bool hasAdvMfrID = false;
+        for (int i = 0; i < (int)dev->getManufacturerDataCount(); i++) {
+            std::string data = dev->getManufacturerData(i);
+            if (data.size() >= 2) {
+                advMfrID = ((uint16_t)(uint8_t)data[1] << 8) | (uint16_t)(uint8_t)data[0];
+                hasAdvMfrID = true;
+                break;
+            }
+        }
+
         // 1. Check Flock Safety direct OUIs (high confidence)
         if (checkFlockMAC(macPrefix)) {
             detected = true;
@@ -671,7 +688,8 @@ class FYBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
         }
 
         // 5. Check BLE manufacturer company IDs (from wgreenberg/flock-you)
-        if (!detected) {
+        if (!detected && hasAdvMfrID) {
+            // Re-check all records in case first wasn't the match
             for (int i = 0; i < (int)dev->getManufacturerDataCount(); i++) {
                 std::string data = dev->getManufacturerData(i);
                 if (data.size() >= 2) {
@@ -699,7 +717,8 @@ class FYBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
 
         if (detected) {
             int idx = fyAddDetection(addrStr.c_str(), name.c_str(), rssi,
-                                     method, isRaven, ravenFW);
+                                     method, isRaven, ravenFW,
+                                     advMfrID, hasAdvMfrID);
 
             // Human-readable log
             printf("[FLOCK-YOU] DETECTED: %s %s RSSI:%d [%s] count:%d\n",
@@ -757,6 +776,8 @@ static void writeDetectionsJSON(AsyncResponseStream *resp) {
                 fyDet[i].mac, fyDet[i].name, fyDet[i].rssi, fyDet[i].method,
                 fyDet[i].firstSeen, fyDet[i].lastSeen, fyDet[i].count,
                 fyDet[i].isRaven ? "true" : "false", fyDet[i].ravenFW);
+            if (fyDet[i].hasMfrID)
+                resp->printf(",\"mfr\":%u", fyDet[i].mfrID);
             // Append GPS if present
             if (fyDet[i].hasGPS) {
                 resp->printf(",\"gps\":{\"lat\":%.8f,\"lon\":%.8f,\"acc\":%.1f}",
@@ -790,6 +811,8 @@ static void fySaveSession() {
                  d.mac, d.name, d.rssi, d.method,
                  d.firstSeen, d.lastSeen, d.count,
                  d.isRaven ? "true" : "false", d.ravenFW);
+        if (d.hasMfrID)
+            f.printf(",\"mfr\":%u", d.mfrID);
         if (d.hasGPS) {
             f.printf(",\"gps\":{\"lat\":%.8f,\"lon\":%.8f,\"acc\":%.1f}", d.gpsLat, d.gpsLon, d.gpsAcc);
         }
@@ -1005,7 +1028,9 @@ function render(){const el=document.getElementById('dL');if(!D.length){el.innerH
 D.sort((a,b)=>b.last-a.last);el.innerHTML=D.map(card).join('');}
 function stats(){document.getElementById('sT').textContent=D.length;document.getElementById('sR').textContent=D.filter(d=>d.raven).length;
 fetch('/api/stats').then(r=>r.json()).then(s=>{let g=document.getElementById('sG');if(s.gps_valid){g.textContent=s.gps_tagged+'/'+s.total;g.style.color='#22c55e';}else{g.textContent='OFF';g.style.color='#ef4444';}}).catch(()=>{});}
-function card(d){return '<div class="det"><div class="mac">'+d.mac+(d.name?'<span class="nm">'+d.name+'</span>':'')+'</div><div class="inf"><span>RSSI: '+d.rssi+'</span><span>'+d.method+'</span><span style="color:#ec4899;font-weight:bold">&times;'+d.count+'</span>'+(d.raven?'<span class="rv">RAVEN '+d.fw+'</span>':'')+(d.gps?'<span style="color:#22c55e">&#9673; '+d.gps.lat.toFixed(5)+','+d.gps.lon.toFixed(5)+'</span>':'<span style="color:#666">no gps</span>')+'</div></div>';}
+const MFR={0x004C:'Apple',0x0006:'Microsoft',0x0075:'Samsung',0x00E0:'Google',0x0171:'Nordic Semiconductor',0x0087:'Qualcomm',0x03DA:'Bose',0x0499:'Ruuvi Innovations',0x05A7:'Sonos',0x008C:'Garmin',0x06A3:'GN Audio (Jabra)',0x02FF:'Fitbit',0x0101:'Logitech',0x0157:'Tile',0x058C:'iRobot',0x0192:'Polar Electro',0x01D7:'Xiaomi',0x01EC:'Huawei',0x059D:'OSRAM',0x0310:'Espressif',0x0490:'reMarkable',0x09C8:'XUNTONG',0x0397:'Estimote',0x02E2:'Belkin',0x00D8:'Plantronics'};
+function mfrName(id){return MFR[id]||('0x'+id.toString(16).toUpperCase().padStart(4,'0'));}
+function card(d){return '<div class="det"><div class="mac">'+d.mac+(d.name?'<span class="nm">'+d.name+'</span>':'')+'</div><div class="inf"><span>RSSI: '+d.rssi+'</span><span>'+d.method+'</span><span style="color:#ec4899;font-weight:bold">&times;'+d.count+'</span>'+(d.raven?'<span class="rv">RAVEN '+d.fw+'</span>':'')+(d.mfr!=null?'<span style="color:#a78bfa;font-size:11px">'+mfrName(d.mfr)+'</span>':'')+(d.gps?'<span style="color:#22c55e">&#9673; '+d.gps.lat.toFixed(8)+','+d.gps.lon.toFixed(8)+'</span>':'<span style="color:#666">no gps</span>')+'</div></div>';}
 function loadHistory(){fetch('/api/history').then(r=>r.json()).then(d=>{H=d;let el=document.getElementById('hL');if(!H.length){el.innerHTML='<div class="empty">No prior session data</div>';return;}
 H.sort((a,b)=>b.last-a.last);el.innerHTML='<div style="font-size:11px;color:#8b5cf6;margin-bottom:8px">'+H.length+' detections from prior session</div>'+H.map(card).join('');window._hL=1;}).catch(()=>{document.getElementById('hL').innerHTML='<div class="empty">No prior session data</div>';});}
 function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{
