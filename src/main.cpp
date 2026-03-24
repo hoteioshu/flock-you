@@ -83,6 +83,7 @@ static char fyNames[FY_MAX_NAMES][FY_NAME_LEN];
 static int  fyNameCount = 0;
 static uint16_t fyMfrIDs[FY_MAX_MFR_IDS];
 static int  fyMfrIDCount = 0;
+static bool fyMfrIDWildcard = false;  // true when user adds "*" mfr_id (match any)
 static char fyRavenUUIDs[FY_MAX_RAVEN][FY_UUID_LEN];
 static int  fyRavenUUIDCount = 0;
 
@@ -283,6 +284,7 @@ static void fyInitDefaultPatterns() {
     }
 
     fyMfrIDCount = 0;
+    fyMfrIDWildcard = false;
     fyMfrIDs[fyMfrIDCount++] = 0x09C8;  // XUNTONG
 
     fyRavenUUIDCount = 0;
@@ -315,7 +317,10 @@ static void fySavePatterns() {
     f.print("],\"names\":[");
     for (int i = 0; i < fyNameCount; i++)     { if (i) f.print(","); f.printf("\"%s\"", fyNames[i]); }
     f.print("],\"mfr_id\":[");
-    for (int i = 0; i < fyMfrIDCount; i++)    { if (i) f.print(","); f.printf("%u", fyMfrIDs[i]); }
+    { bool fx=true;
+      if (fyMfrIDWildcard) { f.print("\"*\""); fx=false; }
+      for (int i=0;i<fyMfrIDCount;i++){if(!fx)f.print(",");f.printf("%u",fyMfrIDs[i]);fx=false;}
+    }
     f.print("],\"raven\":[");
     for (int i = 0; i < fyRavenUUIDCount; i++){ if (i) f.print(","); f.printf("\"%s\"", fyRavenUUIDs[i]); }
     f.print("]}");
@@ -365,12 +370,41 @@ static void fyLoadPatterns() {
     loadRaven("raven",  fyRavenUUIDs, fyRavenUUIDCount);
 
     fyMfrIDCount = 0;
+    fyMfrIDWildcard = false;
     for (JsonVariant v : doc["mfr_id"].as<JsonArray>()) {
         if (fyMfrIDCount >= FY_MAX_MFR_IDS) break;
-        fyMfrIDs[fyMfrIDCount++] = (uint16_t)v.as<unsigned int>();
+        if (v.is<const char*>() && strcmp(v.as<const char*>(), "*") == 0)
+            fyMfrIDWildcard = true;   // wildcard: match any manufacturer ID
+        else
+            fyMfrIDs[fyMfrIDCount++] = (uint16_t)v.as<unsigned int>();
     }
 
     printf("[FLOCK-YOU] Patterns loaded from SPIFFS\n");
+}
+
+// ============================================================================
+// WILDCARD MATCHING
+// ============================================================================
+
+// Simple glob: '*' matches zero or more characters (case-insensitive).
+// Examples: "aa:bb:*" matches any 8-char MAC prefix starting with aa:bb:
+//           "*"       matches anything
+//           "flock*"  matches strings that start with "flock"
+static bool fyWildMatch(const char* pat, const char* str) {
+    if (!pat || !str) return false;
+    if (*pat == '*') {
+        while (*pat == '*') pat++;          // collapse consecutive *
+        if (!*pat) return true;             // trailing * matches rest of string
+        while (*str) {
+            if (fyWildMatch(pat, str)) return true;
+            str++;
+        }
+        return false;
+    }
+    if (!*pat && !*str) return true;
+    if (!*pat || !*str) return false;
+    if (tolower((unsigned char)*pat) != tolower((unsigned char)*str)) return false;
+    return fyWildMatch(pat + 1, str + 1);
 }
 
 // ============================================================================
@@ -378,31 +412,44 @@ static void fyLoadPatterns() {
 // ============================================================================
 
 static bool checkFlockMAC(const char* mac_str) {
-    for (int i = 0; i < fyFlockMACCount; i++)
-        if (strncasecmp(mac_str, fyFlockMACs[i], 8) == 0) return true;
+    for (int i = 0; i < fyFlockMACCount; i++) {
+        const char* p = fyFlockMACs[i];
+        if (strchr(p, '*')) { if (fyWildMatch(p, mac_str)) return true; }
+        else if (strncasecmp(mac_str, p, 8) == 0) return true;
+    }
     return false;
 }
 
 static bool checkFlockMfrMAC(const char* mac_str) {
-    for (int i = 0; i < fyMfrMACCount; i++)
-        if (strncasecmp(mac_str, fyMfrMACs[i], 8) == 0) return true;
+    for (int i = 0; i < fyMfrMACCount; i++) {
+        const char* p = fyMfrMACs[i];
+        if (strchr(p, '*')) { if (fyWildMatch(p, mac_str)) return true; }
+        else if (strncasecmp(mac_str, p, 8) == 0) return true;
+    }
     return false;
 }
 
 static bool checkSoundThinkingMAC(const char* mac_str) {
-    for (int i = 0; i < fySTMACCount; i++)
-        if (strncasecmp(mac_str, fySTMACs[i], 8) == 0) return true;
+    for (int i = 0; i < fySTMACCount; i++) {
+        const char* p = fySTMACs[i];
+        if (strchr(p, '*')) { if (fyWildMatch(p, mac_str)) return true; }
+        else if (strncasecmp(mac_str, p, 8) == 0) return true;
+    }
     return false;
 }
 
 static bool checkDeviceName(const char* name) {
     if (!name || !name[0]) return false;
-    for (int i = 0; i < fyNameCount; i++)
-        if (strcasestr(name, fyNames[i])) return true;
+    for (int i = 0; i < fyNameCount; i++) {
+        const char* p = fyNames[i];
+        if (strchr(p, '*')) { if (fyWildMatch(p, name)) return true; }
+        else if (strcasestr(name, p)) return true;
+    }
     return false;
 }
 
 static bool checkManufacturerID(uint16_t id) {
+    if (fyMfrIDWildcard) return true;  // wildcard: match any mfr ID
     for (int i = 0; i < fyMfrIDCount; i++)
         if (fyMfrIDs[i] == id) return true;
     return false;
@@ -420,7 +467,10 @@ static bool checkRavenUUID(NimBLEAdvertisedDevice* device, char* out_uuid = null
         NimBLEUUID svc = device->getServiceUUID(i);
         std::string str = svc.toString();
         for (int j = 0; j < fyRavenUUIDCount; j++) {
-            if (strcasecmp(str.c_str(), fyRavenUUIDs[j]) == 0) {
+            const char* p = fyRavenUUIDs[j];
+            bool match = strchr(p, '*') ? fyWildMatch(p, str.c_str())
+                                        : (strcasecmp(str.c_str(), p) == 0);
+            if (match) {
                 if (out_uuid) strncpy(out_uuid, str.c_str(), 40);
                 return true;
             }
@@ -962,12 +1012,12 @@ function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{
 function sec(title,type,items,fmt){
 var del=items.map(v=>'<div class="iv"><span>'+fmt(v)+'</span><button onclick="patDel(\''+type+'\',\''+v+'\')" title="Delete">&times;<\/button><\/div>').join('');
 return '<div class="pg"><h3>'+title+' ('+items.length+')<\/h3><div class="it">'+del+'<\/div><div class="ai"><input id="ai_'+type+'" type="text" placeholder="'+placeholders[type]+'"><button onclick="patAdd(\''+type+'\')">ADD<\/button><\/div><\/div>';}
-var placeholders={flock_mac:'aa:bb:cc',mfr_mac:'aa:bb:cc',st_mac:'aa:bb:cc',name:'device name',mfr_id:'0x09C8',raven:'00001234-...'};var h='';
+var placeholders={flock_mac:'aa:bb:cc or aa:*',mfr_mac:'aa:bb:cc or *',st_mac:'aa:bb:cc or *',name:'device name or flock*',mfr_id:'0x09C8 or *',raven:'00001234-... or 000031*'};var h='';
 h+=sec('Flock Safety MACs','flock_mac',p.flock_mac,v=>v);
 h+=sec('Contract Mfr MACs','mfr_mac',p.mfr_mac,v=>v);
 h+=sec('SoundThinking MACs','st_mac',p.st_mac,v=>v);
 h+=sec('BLE Device Names','name',p.names,v=>v);
-h+=sec('Manufacturer IDs','mfr_id',p.mfr_id,v=>'0x'+Number(v).toString(16).toUpperCase().padStart(4,'0'));
+h+=sec('Manufacturer IDs','mfr_id',p.mfr_id,v=>v==='*'?'*':'0x'+Number(v).toString(16).toUpperCase().padStart(4,'0'));
 h+=sec('Raven UUIDs','raven',p.raven,v=>'<span style="font-size:9px">'+v+'<\/span>');
 h+='<button class="btn dng" style="margin-top:10px" onclick="patReset()">RESET TO FIRMWARE DEFAULTS<\/button>';
 document.getElementById('pC').innerHTML=h;}).catch(()=>{});}
@@ -1076,7 +1126,10 @@ static void fySetupServer() {
         resp->print("],\"names\":[");
         for (int i = 0; i < fyNameCount; i++)       { if (i) resp->print(","); resp->printf("\"%s\"", fyNames[i]); }
         resp->print("],\"mfr_id\":[");
-        for (int i = 0; i < fyMfrIDCount; i++)      { if (i) resp->print(","); resp->printf("%u", fyMfrIDs[i]); }
+        { bool fx=true;
+          if (fyMfrIDWildcard) { resp->print("\"*\""); fx=false; }
+          for (int i=0;i<fyMfrIDCount;i++){if(!fx)resp->print(",");resp->printf("%u",fyMfrIDs[i]);fx=false;}
+        }
         resp->print("],\"raven\":[");
         for (int i = 0; i < fyRavenUUIDCount; i++)  { if (i) resp->print(","); resp->printf("\"%s\"", fyRavenUUIDs[i]); }
         resp->print("]}");
@@ -1102,8 +1155,12 @@ static void fySetupServer() {
             strncpy(fySTMACs[fySTMACCount++], value.c_str(), FY_MAC_LEN - 1); ok = true;
         } else if (type == "name" && fyNameCount < FY_MAX_NAMES) {
             strncpy(fyNames[fyNameCount++], r->getParam("value", true)->value().c_str(), FY_NAME_LEN - 1); ok = true;
-        } else if (type == "mfr_id" && fyMfrIDCount < FY_MAX_MFR_IDS) {
-            fyMfrIDs[fyMfrIDCount++] = (uint16_t)strtoul(value.c_str(), nullptr, 0); ok = true;
+        } else if (type == "mfr_id") {
+            if (value == "*") {
+                fyMfrIDWildcard = true; ok = true;
+            } else if (fyMfrIDCount < FY_MAX_MFR_IDS) {
+                fyMfrIDs[fyMfrIDCount++] = (uint16_t)strtoul(value.c_str(), nullptr, 0); ok = true;
+            }
         } else if (type == "raven" && fyRavenUUIDCount < FY_MAX_RAVEN) {
             strncpy(fyRavenUUIDs[fyRavenUUIDCount++], value.c_str(), FY_UUID_LEN - 1); ok = true;
         }
@@ -1154,11 +1211,15 @@ static void fySetupServer() {
         else if (type == "name")      removeStr(fyNames,      fyNameCount,      FY_NAME_LEN);
         else if (type == "raven")     removeRaven(fyRavenUUIDs, fyRavenUUIDCount);
         else if (type == "mfr_id") {
-            uint16_t id = (uint16_t)strtoul(value.c_str(), nullptr, 0);
-            for (int i = 0; i < fyMfrIDCount; i++) {
-                if (fyMfrIDs[i] == id) {
-                    memmove(&fyMfrIDs[i], &fyMfrIDs[i+1], (fyMfrIDCount - i - 1) * sizeof(uint16_t));
-                    fyMfrIDCount--; ok = true; break;
+            if (value == "*") {
+                if (fyMfrIDWildcard) { fyMfrIDWildcard = false; ok = true; }
+            } else {
+                uint16_t id = (uint16_t)strtoul(value.c_str(), nullptr, 0);
+                for (int i = 0; i < fyMfrIDCount; i++) {
+                    if (fyMfrIDs[i] == id) {
+                        memmove(&fyMfrIDs[i], &fyMfrIDs[i+1], (fyMfrIDCount - i - 1) * sizeof(uint16_t));
+                        fyMfrIDCount--; ok = true; break;
+                    }
                 }
             }
         }

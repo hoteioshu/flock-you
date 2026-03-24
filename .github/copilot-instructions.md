@@ -189,3 +189,10 @@ fyServer.on("/api/route", HTTP_GET, [](AsyncWebServerRequest *r) {
 - Adding libraries: append to `lib_deps` in `[common]` with pinned version using `@^X.Y.Z`
 - Adding build flags: if both boards need them, add to each env's `build_flags`; if board-specific, add only to that env
 - Buzzer GPIO is set via `-DFY_BUZZER_PIN=N` per environment — do not hard-code the value in `src/main.cpp`
+
+## Documentation and Comments
+- Use `//` for single-line comments, `/* ... */` for multi-line
+- Comment style: `// [SECTION] Description` for major sections, `// Description` for inline comments
+- Document the purpose of functions, especially API handlers and BLE callbacks
+- Use `///` Doxygen-style comments for any functions that are not self-explanatory
+- Keep comments up-to-date with code changes — outdated comments are worse than no comments

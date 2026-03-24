@@ -22,11 +22,13 @@ All detection is BLE-based:
 
 | Method | Description |
 |--------|-------------|
-| **MAC prefix** | 20 known Flock Safety OUI prefixes (FS Ext Battery, Flock WiFi modules) |
+| **MAC prefix** | Known Flock Safety OUI prefixes (FS Ext Battery, Flock WiFi modules) |
 | **BLE device name** | Case-insensitive substring match: `FS Ext Battery`, `Penguin`, `Flock`, `Pigvision` |
 | **Manufacturer ID** | `0x09C8` (XUNTONG) — catches devices with no broadcast name. *From [wgreenberg/flock-you](https://github.com/wgreenberg/flock-you)* |
 | **Raven service UUID** | Identifies Raven gunshot detectors by BLE GATT service UUIDs |
 | **Raven FW estimation** | Determines firmware version (1.1.x / 1.2.x / 1.3.x) from advertised service patterns |
+
+All pattern lists are fully editable from the **DB tab** of the web dashboard and persist across reboots. Patterns support `*` wildcards — see [Pattern Database](#pattern-database) below.
 
 ---
 
@@ -35,6 +37,7 @@ All detection is BLE-based:
 - **WiFi AP**: `flockyou` / password `flockyou123` — always active at `192.168.4.1`
 - **WiFi STA (hotspot mode)**: join your phone's mobile hotspot so your phone keeps cellular data; dashboard also reachable at `flockyou.local`
 - **Web dashboard** at `192.168.4.1` (or `flockyou.local` on hotspot) — live detection feed, pattern database, export tools
+- **Editable pattern database** — add, delete, and wildcard-match MAC prefixes, device names, manufacturer IDs, and Raven UUIDs from the DB tab; changes persist to flash
 - **GPS wardriving** — phone GPS via browser Geolocation API auto-starts and tags every detection with coordinates
 - **Session persistence** — detections auto-save to flash (SPIFFS) every 15 seconds
 - **Prior session tab** — previous session survives reboot and is viewable in the PREV tab
@@ -182,6 +185,27 @@ python flockyou.py
 Open `http://localhost:5000` for the desktop dashboard.
 
 **Import support:** JSON, CSV, and KML files exported from the ESP32 can be imported directly into the Flask app. Live serial ingestion is also supported — connect the ESP32 via USB and select the serial port in the Flask UI.
+
+---
+
+## Pattern Database
+
+The **DB tab** in the web dashboard lets you view, add, and delete entries in all six detection pattern categories without reflashing. Changes are saved to `/patterns.json` on SPIFFS and survive reboots. A **RESET TO FIRMWARE DEFAULTS** button restores the built-in lists.
+
+### Wildcard support
+
+All pattern fields accept `*` as a glob wildcard matching zero or more characters (case-insensitive).
+
+| Pattern | Matches |
+|---------|---------|
+| `*` | Everything in that category |
+| `aa:bb:*` | Any MAC whose first two OUI bytes are `aa:bb` |
+| `flock*` | Any device name starting with "flock" |
+| `*cam*` | Any device name containing "cam" |
+| `00003*` | Any Raven UUID starting with `00003` |
+| `*` (mfr_id) | Any device that broadcasts manufacturer data, regardless of company ID |
+
+> **Tip:** Adding `*` to the Flock MAC, Mfr MAC, or SoundThinking MAC categories will flag **every BLE device** in that category — useful for passive logging of all nearby hardware.
 
 ---
 
