@@ -167,7 +167,7 @@ static unsigned long fyLastSave = 0;
 static int fyLastSaveCount = 0;  // Track changes to avoid unnecessary writes
 static bool fySpiffsReady = false;
 
-// WiFi STA (hotspot join) state
+// WiFi STA (network join) state
 static String fySavedSSID = "";
 static String fySavedPass = "";
 static bool fySTAConnected = false;
@@ -864,7 +864,7 @@ static void fyPromotePrevSession() {
 }
 
 // ============================================================================
-// WIFI STA (HOTSPOT) MANAGEMENT
+// WIFI STA NETWORK MANAGEMENT
 // ============================================================================
 
 static bool fyLoadWifiCreds() {
@@ -1000,9 +1000,9 @@ h4{color:#ec4899;font-size:14px;margin-bottom:8px}
 <div class="pn" id="p3">
 <h4>WIFI MODE</h4>
 <div id="wSt" style="font-size:11px;color:#8b5cf6;margin-bottom:8px">Loading...</div>
-<button class="btn" onclick="toggleWf()" style="background:#6366f1;margin-bottom:4px">CONFIGURE HOTSPOT (STA)</button>
-<div id="wFm" style="display:none;margin-bottom:8px"><p style="font-size:10px;color:#8b5cf6;margin-bottom:6px">Enter your phone hotspot SSID and password. The ESP32 joins it while keeping the flockyou AP active. Once connected, the dashboard is also reachable at <b>flockyou.local</b> on the hotspot network with cellular data still working.</p>
-<input id="wSS" type="text" placeholder="Hotspot SSID" autocomplete="off" style="width:100%;padding:8px;margin-bottom:6px;background:#1a0033;color:#e0e0e0;border:1px solid #8b5cf6;border-radius:4px;font-family:inherit;font-size:13px">
+<button class="btn" onclick="toggleWf()" style="background:#6366f1;margin-bottom:4px">CONFIGURE WIFI NETWORK (STA)</button>
+<div id="wFm" style="display:none;margin-bottom:8px"><p style="font-size:10px;color:#8b5cf6;margin-bottom:6px">Enter the SSID and password of any WiFi network \u2014 a phone hotspot, home router, or venue WiFi. The ESP32 joins it while keeping the <b>flockyou</b> AP active. Once connected, the dashboard is also reachable at <b>flockyou.local</b> on that network. Use a phone hotspot to keep cellular data working while connected to the dashboard.</p>
+<input id="wSS" type="text" placeholder="Network SSID" autocomplete="off" style="width:100%;padding:8px;margin-bottom:6px;background:#1a0033;color:#e0e0e0;border:1px solid #8b5cf6;border-radius:4px;font-family:inherit;font-size:13px">
 <input id="wPW" type="password" placeholder="Password" style="width:100%;padding:8px;margin-bottom:6px;background:#1a0033;color:#e0e0e0;border:1px solid #8b5cf6;border-radius:4px;font-family:inherit;font-size:13px">
 <button class="btn" onclick="saveWifi()" style="background:#22c55e">CONNECT</button>
 <button class="btn dng" onclick="clearWifi()">CLEAR / AP-ONLY MODE</button>
@@ -1080,7 +1080,7 @@ function toggleWf(){var f=document.getElementById('wFm');f.style.display=f.style
 function saveWifi(){var ss=document.getElementById('wSS').value.trim(),pw=document.getElementById('wPW').value;
 if(!ss){alert('Enter SSID');return;}
 document.getElementById('wFm').style.display='none';
-document.getElementById('wSt').innerHTML='Connecting to <b>'+ss+'<\/b>... check status in ~20s';
+document.getElementById('wSt').innerHTML='Connecting to <b>'+ss+'<\/b>... (may take up to 20 s)';
 fetch('/api/wifi/sta',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(ss)+'&pass='+encodeURIComponent(pw)})
 .then(r=>r.json()).then(()=>setTimeout(loadWifiStatus,22000)).catch(()=>alert('Request failed'));}
 function clearWifi(){if(!confirm('Switch to AP-only mode?'))return;fetch('/api/wifi/clear').then(r=>r.json()).then(()=>loadWifiStatus()).catch(()=>{});}
@@ -1420,6 +1420,8 @@ static void fySetupServer() {
                 fySTAConnected  = false;
                 fySTAConnecting = false;
                 fySTAIP = "";
+                fySTARetryAt = 0;         // bypass any active backoff immediately
+                WiFi.disconnect(true);    // abort any in-progress connection attempt
                 fySTAConnectPending = true;
                 r->send(200, "application/json", "{\"saved\":true}");
                 printf("[FLOCK-YOU] STA credentials saved for '%s'\n", ssid.c_str());
@@ -1527,7 +1529,7 @@ void setup() {
     printf("[FLOCK-YOU] AP: %s / %s\n", FY_AP_SSID, FY_AP_PASS);
     printf("[FLOCK-YOU] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
 
-    // Load saved STA (hotspot) credentials and queue connection attempt
+    // Load saved STA (WiFi network) credentials and queue connection attempt
     if (fyLoadWifiCreds()) {
         printf("[FLOCK-YOU] STA credentials found for '%s', connecting...\n", fySavedSSID.c_str());
         fySTAConnectPending = true;
@@ -1545,7 +1547,7 @@ void setup() {
     fySetupServer();
 
     printf("[FLOCK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
-    printf("[FLOCK-YOU] Dashboard: http://192.168.4.1 (phone hotspot: http://flockyou.local)\n");
+    printf("[FLOCK-YOU] Dashboard: http://192.168.4.1 (STA network: http://flockyou.local)\n");
     printf("[FLOCK-YOU] Ready - BLE GATT + AP mode\n\n");
 }
 
@@ -1570,7 +1572,7 @@ void loop() {
         fyOnCompanionChange();
     }
 
-    // STA (hotspot) connection management — non-blocking, driven by loop()
+    // STA (WiFi network) connection management — non-blocking, driven by loop()
     // fySTAConnectPending is only acted on once the backoff window has elapsed.
     // fySTARetryAt == 0 on first boot so the initial connect fires immediately.
     if (fySTAConnectPending && millis() >= fySTARetryAt) {
