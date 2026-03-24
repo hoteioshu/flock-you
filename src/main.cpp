@@ -1000,12 +1000,12 @@ h4{color:#ec4899;font-size:14px;margin-bottom:8px}
 <div class="pn" id="p3">
 <h4>WIFI MODE</h4>
 <div id="wSt" style="font-size:11px;color:#8b5cf6;margin-bottom:8px">Loading...</div>
+<button id="wFg" class="btn dng" onclick="clearWifi()" style="display:none;margin-bottom:4px">FORGET SAVED NETWORK</button>
 <button class="btn" onclick="toggleWf()" style="background:#6366f1;margin-bottom:4px">CONFIGURE WIFI NETWORK (STA)</button>
 <div id="wFm" style="display:none;margin-bottom:8px"><p style="font-size:10px;color:#8b5cf6;margin-bottom:6px">Enter the SSID and password of any WiFi network \u2014 a phone hotspot, home router, or venue WiFi. The ESP32 joins it while keeping the <b>flockyou</b> AP active. Once connected, the dashboard is also reachable at <b>flockyou.local</b> on that network. Use a phone hotspot to keep cellular data working while connected to the dashboard.</p>
 <input id="wSS" type="text" placeholder="Network SSID" autocomplete="off" style="width:100%;padding:8px;margin-bottom:6px;background:#1a0033;color:#e0e0e0;border:1px solid #8b5cf6;border-radius:4px;font-family:inherit;font-size:13px">
 <input id="wPW" type="password" placeholder="Password" style="width:100%;padding:8px;margin-bottom:6px;background:#1a0033;color:#e0e0e0;border:1px solid #8b5cf6;border-radius:4px;font-family:inherit;font-size:13px">
 <button class="btn" onclick="saveWifi()" style="background:#22c55e">CONNECT</button>
-<button class="btn dng" onclick="clearWifi()">CLEAR / AP-ONLY MODE</button>
 </div>
 <hr class="sep">
 <h4>EXPORT DETECTIONS</h4>
@@ -1073,17 +1073,20 @@ function loadWifiStatus(){fetch('/api/wifi/status').then(r=>r.json()).then(d=>{
 var s=document.getElementById('wSt'),t='<b>AP:</b> 192.168.4.1';
 if(d.sta_connecting){t+=' | <b>STA:</b> <span style="color:#facc15">connecting to '+d.sta_ssid+'...<\/span>';}
 else if(d.sta_connected){t+=' | <b>STA:</b> <span style="color:#22c55e">'+d.sta_ip+' ('+d.sta_ssid+')<\/span> &mdash; <a href="http:\/\/flockyou.local" style="color:#ec4899">flockyou.local<\/a>';}
-else if(d.sta_ssid){t+=' | <b>STA:<\/b> <span style="color:#ef4444">'+d.sta_ssid+' (failed)<\/span>';}
+else if(d.sta_ssid){t+=' | <b>STA:<\/b> <span style="color:#ef4444">'+d.sta_ssid+' (not connected)<\/span>';}
 else{t+=' | <b>STA:<\/b> not configured';}
-s.innerHTML=t;}).catch(()=>{});}
+s.innerHTML=t;
+document.getElementById('wFg').style.display=d.sta_ssid?'block':'none';
+}).catch(()=>{});}
 function toggleWf(){var f=document.getElementById('wFm');f.style.display=f.style.display==='none'?'block':'none';}
 function saveWifi(){var ss=document.getElementById('wSS').value.trim(),pw=document.getElementById('wPW').value;
 if(!ss){alert('Enter SSID');return;}
+if(ss.toLowerCase()==='flockyou'){alert("'flockyou' is this device's own network \u2014 enter your phone hotspot or router SSID instead.");return;}
 document.getElementById('wFm').style.display='none';
 document.getElementById('wSt').innerHTML='Connecting to <b>'+ss+'<\/b>... (may take up to 20 s)';
 fetch('/api/wifi/sta',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(ss)+'&pass='+encodeURIComponent(pw)})
-.then(r=>r.json()).then(()=>setTimeout(loadWifiStatus,22000)).catch(()=>alert('Request failed'));}
-function clearWifi(){if(!confirm('Switch to AP-only mode?'))return;fetch('/api/wifi/clear').then(r=>r.json()).then(()=>loadWifiStatus()).catch(()=>{});}
+.then(r=>r.json()).then(d=>{if(d.error){document.getElementById('wFm').style.display='block';document.getElementById('wSt').innerHTML='Error: '+d.error;return;}setTimeout(loadWifiStatus,22000);}).catch(()=>alert('Request failed'));}
+function clearWifi(){fetch('/api/wifi/clear').then(r=>r.json()).then(()=>{document.getElementById('wFm').style.display='none';loadWifiStatus();}).catch(()=>{});}
 refresh();startGPS();setInterval(refresh,2500);
 </script></body></html>
 )rawliteral";
@@ -1414,6 +1417,12 @@ static void fySetupServer() {
             String ssid = r->getParam("ssid", true)->value();
             String pass = r->hasParam("pass", true) ? r->getParam("pass", true)->value() : "";
             if (ssid.length() > 0) {
+                // Reject the device's own AP SSID — joining yourself is never valid
+                if (ssid.equalsIgnoreCase(FY_AP_SSID)) {
+                    r->send(400, "application/json", "{\"error\":\"cannot join own AP\"}");
+                    printf("[FLOCK-YOU] STA rejected: '%s' is this device's own AP\n", ssid.c_str());
+                    return;
+                }
                 fySavedSSID = ssid;
                 fySavedPass = pass;
                 fySaveWifiCreds(ssid, pass);
