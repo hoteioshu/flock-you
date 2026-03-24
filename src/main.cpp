@@ -174,6 +174,7 @@ static bool fySTAConnected = false;
 static bool fySTAConnecting = false;
 static unsigned long fySTAConnectStart = 0;
 static volatile bool fySTAConnectPending = false;
+static unsigned long fySTARetryAt = 0;    // millis() threshold before next connect attempt
 static String fySTAIP = "";
 
 // ============================================================================
@@ -1436,11 +1437,13 @@ static void fySetupServer() {
         fySTAConnected  = false;
         fySTAConnecting = false;
         fySTAConnectPending = false;
+        fySTARetryAt = 0;
         fySTAIP = "";
+        // Disconnect STA only — do NOT switch WiFi mode or call softAP() here.
+        // The softAP continues unaffected in WIFI_AP_STA mode and delay() must
+        // never be called inside an async handler.
         WiFi.disconnect(true);
-        WiFi.mode(WIFI_AP);
-        delay(100);
-        WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
+        MDNS.end();
         r->send(200, "application/json", "{\"status\":\"ap_only\"}");
         printf("[FLOCK-YOU] STA cleared, AP-only mode\n");
     });
@@ -1568,7 +1571,9 @@ void loop() {
     }
 
     // STA (hotspot) connection management — non-blocking, driven by loop()
-    if (fySTAConnectPending) {
+    // fySTAConnectPending is only acted on once the backoff window has elapsed.
+    // fySTARetryAt == 0 on first boot so the initial connect fires immediately.
+    if (fySTAConnectPending && millis() >= fySTARetryAt) {
         fySTAConnectPending = false;
         fySTAConnecting = true;
         fySTAConnected = false;
@@ -1586,17 +1591,22 @@ void loop() {
             MDNS.addService("http", "tcp", 80);
             printf("[FLOCK-YOU] STA connected: %s (flockyou.local)\n", fySTAIP.c_str());
         } else if (millis() - fySTAConnectStart > 20000) {
+            // Hotspot not found — back off 30 s before retrying so AP stays stable
             fySTAConnecting = false;
             fySTAConnected = false;
             fySTAIP = "";
-            printf("[FLOCK-YOU] STA connect timeout\n");
+            fySTAConnectPending = true;
+            fySTARetryAt = millis() + 30000;
+            printf("[FLOCK-YOU] STA connect timeout — retry in 30 s\n");
         }
     } else if (fySTAConnected && WiFi.status() != WL_CONNECTED) {
-        // Lost STA connection — retry
+        // Lost an established STA connection — back off 30 s before retrying
         fySTAConnected = false;
         fySTAIP = "";
         fySTAConnectPending = true;
-        printf("[FLOCK-YOU] STA lost, retrying...\n");
+        fySTARetryAt = millis() + 30000;
+        MDNS.end();
+        printf("[FLOCK-YOU] STA lost — retry in 30 s\n");
     }
 
     // BLE scanning cycle
